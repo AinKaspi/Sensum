@@ -64,7 +64,6 @@
 				3DE9F648A42346850A187557 /* Pods-Sensum.debug.xcconfig */,
 				A012BF5EA12C43066A77F48C /* Pods-Sensum.release.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
