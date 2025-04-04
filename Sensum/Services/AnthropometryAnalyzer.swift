@@ -23,15 +23,26 @@ class AnthropometryAnalyzer {
     private let smoothingWindowSize = 5
     private var positionHistory: [[NormalizedLandmark]] = []
     
+    // Добавляем новые свойства для отслеживания ориентации
+    private var lastValidOrientation: Double = 0
+    private var lastUpdateTime: TimeInterval = 0
+    private let maxRotationPerSecond = 90.0 // Максимальный угол поворота в градусах в секунду
+    
     // MARK: - Public Methods
     
     /// Применяет антропометрические ограничения и сглаживание к ключевым точкам
     func processLandmarks(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
-        // Сначала применяем анатомические ограничения
+        // Получаем текущую ориентацию скелета
+        let orientation = calculateSkeletonOrientation(landmarks)
+        
+        // Применяем существующие ограничения
         let constrainedLandmarks = applyAnatomicalConstraints(landmarks)
         
-        // Затем сглаживаем движения
-        let smoothedLandmarks = smoothPositions(constrainedLandmarks)
+        // Стабилизируем ориентацию
+        let stabilizedLandmarks = stabilizeOrientation(constrainedLandmarks, targetOrientation: orientation)
+        
+        // Сглаживаем движения
+        let smoothedLandmarks = smoothPositions(stabilizedLandmarks)
         
         // Применяем проверку пропорций
         return validateAndAdjustProportions(smoothedLandmarks)
@@ -234,5 +245,81 @@ class AnthropometryAnalyzer {
         }
         
         return knee
+    }
+    
+    private func calculateSkeletonOrientation(_ landmarks: [NormalizedLandmark]) -> Double {
+        guard landmarks.count >= 33 else { return lastValidOrientation }
+        
+        // Используем плечи для определения ориентации
+        let leftShoulder = landmarks[11]
+        let rightShoulder = landmarks[12]
+        
+        // Вычисляем угол между плечами относительно горизонтали
+        let dx = Double(rightShoulder.x - leftShoulder.x)
+        let dy = Double(rightShoulder.y - leftShoulder.y)
+        let currentOrientation = atan2(dy, dx) * 180.0 / .pi
+        
+        // Проверяем видимость точек
+        let shouldersVisible = (leftShoulder.visibility?.floatValue ?? 0 > 0.5) &&
+                             (rightShoulder.visibility?.floatValue ?? 0 > 0.5)
+        
+        if !shouldersVisible {
+            return lastValidOrientation // Возвращаем последнюю валидную ориентацию
+        }
+        
+        // Ограничиваем скорость поворота
+        let now = Date().timeIntervalSince1970
+        let deltaTime = now - lastUpdateTime
+        let maxDelta = maxRotationPerSecond * deltaTime
+        
+        var orientationDelta = currentOrientation - lastValidOrientation
+        
+        // Нормализуем разницу углов
+        while orientationDelta > 180 { orientationDelta -= 360 }
+        while orientationDelta < -180 { orientationDelta += 360 }
+        
+        // Ограничиваем изменение
+        if abs(orientationDelta) > maxDelta {
+            orientationDelta = orientationDelta > 0 ? maxDelta : -maxDelta
+        }
+        
+        let newOrientation = lastValidOrientation + orientationDelta
+        
+        lastValidOrientation = newOrientation
+        lastUpdateTime = now
+        
+        return newOrientation
+    }
+    
+    private func stabilizeOrientation(_ landmarks: [NormalizedLandmark], targetOrientation: Double) -> [NormalizedLandmark] {
+        guard landmarks.count >= 33 else { return landmarks }
+        
+        // Находим центр скелета (между бедрами)
+        let centerX = (landmarks[23].x + landmarks[24].x) / 2
+        let centerY = (landmarks[23].y + landmarks[24].y) / 2
+        
+        // Создаем матрицу поворота
+        let currentAngle = calculateSkeletonOrientation(landmarks)
+        let rotationAngle = targetOrientation - currentAngle
+        let cosAngle = Float(cos(rotationAngle * .pi / 180.0))
+        let sinAngle = Float(sin(rotationAngle * .pi / 180.0))
+        
+        return landmarks.map { landmark in
+            // Смещаем точку относительно центра
+            let dx = landmark.x - centerX
+            let dy = landmark.y - centerY
+            
+            // Поворачиваем
+            let newX = dx * cosAngle - dy * sinAngle + centerX
+            let newY = dx * sinAngle + dy * cosAngle + centerY
+            
+            return NormalizedLandmark(
+                x: newX,
+                y: newY,
+                z: landmark.z,
+                visibility: landmark.visibility,
+                presence: landmark.presence ?? NSNumber(value: 1.0)
+            )
+        }
     }
 }
