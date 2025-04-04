@@ -306,15 +306,15 @@ class CameraFeedService: NSObject {
   
   // MARK: Notification Observer Handling
   private func addObservers() {
-    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionRuntimeErrorOccured(notification:)), name: NSNotification.Name.AVCaptureSessionRuntimeError, object: session)
-    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionWasInterrupted(notification:)), name: NSNotification.Name.AVCaptureSessionWasInterrupted, object: session)
-    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionInterruptionEnded), name: NSNotification.Name.AVCaptureSessionInterruptionEnded, object: session)
+    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionRuntimeErrorOccured(notification:)), name: AVCaptureSession.runtimeErrorNotification, object: session)
+    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionWasInterrupted(notification:)), name: AVCaptureSession.wasInterruptedNotification, object: session)
+    NotificationCenter.default.addObserver(self, selector: #selector(CameraFeedService.sessionInterruptionEnded), name: AVCaptureSession.interruptionEndedNotification, object: session)
   }
   
   private func removeObservers() {
-    NotificationCenter.default.removeObserver(self, name: NSNotification.Name.AVCaptureSessionRuntimeError, object: session)
-    NotificationCenter.default.removeObserver(self, name: NSNotification.Name.AVCaptureSessionWasInterrupted, object: session)
-    NotificationCenter.default.removeObserver(self, name: NSNotification.Name.AVCaptureSessionInterruptionEnded, object: session)
+    NotificationCenter.default.removeObserver(self, name: AVCaptureSession.runtimeErrorNotification, object: session)
+    NotificationCenter.default.removeObserver(self, name: AVCaptureSession.wasInterruptedNotification, object: session)
+    NotificationCenter.default.removeObserver(self, name: AVCaptureSession.interruptionEndedNotification, object: session)
   }
   
   // MARK: Notification Observers
