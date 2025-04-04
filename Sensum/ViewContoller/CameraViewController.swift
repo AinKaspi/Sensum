@@ -82,6 +82,9 @@ class CameraViewController: UIViewController {
         }
     }
     
+    // Add new property
+    private let anthropometryAnalyzer = AnthropometryAnalyzer()
+    
 #if !targetEnvironment(simulator)
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
@@ -679,7 +682,7 @@ extension CameraViewController: CameraFeedServiceDelegate {
   }
 }
 
-// MARK: PoseLandmarkerServiceLiveStreamDelegate
+// Update the PoseLandmarkerServiceLiveStreamDelegate extension
 extension CameraViewController: PoseLandmarkerServiceLiveStreamDelegate {
     func poseLandmarkerService(
         _ poseLandmarkerService: PoseLandmarkerService,
@@ -695,16 +698,21 @@ extension CameraViewController: PoseLandmarkerServiceLiveStreamDelegate {
                 // Перемещаем отдельные точки в массив
                 let landmarksArray = Array(landmarks)
                 
-                // Обновляем метрики с учетом углов
-                if let inferenceTime = result?.inferenceTime {
-                    // Получаем углы (теперь не используем if let, так как метод всегда возвращает словарь)
-                    let angles = PoseAnalyzer.analyzePose(landmarks: landmarksArray)
-                    
-                    // Логируем углы для отладки
-                    os_log("Pose angles: %{public}@", log: weakSelf.logger, type: .debug, String(describing: angles))
-                    
-                    // Обновляем метрики
-                    weakSelf.updateMetricsWithAngles(landmarks: landmarksArray, angles: angles, inferenceTime: inferenceTime)
+                // Применяем антропометрический анализ
+                let processedLandmarks = weakSelf.anthropometryAnalyzer.processLandmarks(landmarksArray)
+                
+                // Проверяем достоверность позы
+                if weakSelf.anthropometryAnalyzer.isPoseValid(processedLandmarks) {
+                    if let inferenceTime = result?.inferenceTime {
+                        // Получаем углы (теперь не используем if let, так как метод всегда возвращает словарь)
+                        let angles = PoseAnalyzer.analyzePose(landmarks: processedLandmarks)
+                        
+                        // Логируем углы для отладки
+                        os_log("Pose angles: %{public}@", log: weakSelf.logger, type: .debug, String(describing: angles))
+                        
+                        // Обновляем метрики
+                        weakSelf.updateMetricsWithAngles(landmarks: processedLandmarks, angles: angles, inferenceTime: inferenceTime)
+                    }
                 }
             }
             
