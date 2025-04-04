@@ -26,6 +26,39 @@ class AnthropometryAnalyzer {
         static let minVisiblePoints = 4 // Минимальное количество видимых точек для валидной позы
         static let visibilityThreshold: Float = 0.5 // Порог видимости точки
         static let stabilityTimeout: TimeInterval = 0.5 // Время удержания последней стабильной позы
+        
+        // Добавляем константы для гибкости суставов
+        static let shoulderFlexibility: Float = 0.7  // Гибкость плечевого пояса
+        static let spineFlexibility: Float = 0.5    // Гибкость позвоночника
+        static let verticalMotionThreshold = 0.1    // Порог для определения вертикального движения
+        static let shoulderTensionReduction: Float = 0.3   // Уменьшение напряжения между плечами при поднятии рук
+
+        // Веса точек (имитация массы тела)
+        static let jointWeights: [Int: Float] = [
+            0: 0.8,   // голова
+            11: 0.6,  // левое плечо
+            12: 0.6,  // правое плечо
+            23: 1.0,  // левое бедро (центр тяжести)
+            24: 1.0,  // правое бедро
+            15: 0.2,  // левая кисть
+            16: 0.2,  // правая кисть
+            27: 0.4,  // левая стопа
+            28: 0.4   // правая стопа
+        ]
+        
+        // Цепочки влияния (от центра к конечностям)
+        static let influenceChains: [[Int]] = [
+            [23, 24, 11, 13, 15],  // центр -> левая рука
+            [23, 24, 12, 14, 16],  // центр -> правая рука
+            [23, 25, 27],          // центр -> левая нога
+            [24, 26, 28]           // центр -> правая нога
+        ]
+        
+        static let stabilityFactors = (
+            lowVisibility: 0.3,    // Множитель влияния при низкой видимости
+            distanceDecay: 0.8,    // Затухание влияния с расстоянием
+            inertiaFactor: 0.7     // Фактор инерции для стабильности
+        )
     }
     
     // MARK: - Properties
@@ -48,10 +81,17 @@ class AnthropometryAnalyzer {
     private var lastStablePose: [NormalizedLandmark]?
     private var isStabilizing = false
     
+    // Добавляем отслеживание вертикального движения рук
+    private var lastArmPositionsY: (left: Float, right: Float)?
+    private var isRaisingArms = false
+    
     // MARK: - Public Methods
     
     /// Применяет антропометрические ограничения и сглаживание к ключевым точкам
     func processLandmarks(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        // Определяем поднятие рук
+        detectArmRaising(landmarks)
+        
         // Проверяем стабильность позы
         if !isPoseStable(landmarks) {
             isStabilizing = true
@@ -189,8 +229,13 @@ class AnthropometryAnalyzer {
         if adjusted.count >= 33 {
             // Корректируем высоту плеч
             let shoulderY = adjusted[11].y // Используем левое плечо как ориентир
-            let expectedShoulderY = height * Float(HumanProportions.shoulderToHeight)
-            let shoulderDiff = expectedShoulderY - shoulderY
+            let expectedShoulderY = height * Float(HumanProportions.shoulderToHeight) // Явное приведение к Float
+            var shoulderDiff = expectedShoulderY - shoulderY
+            
+            if isRaisingArms {
+                // Ослабляем ограничения пропорций при поднятии рук
+                shoulderDiff *= Constants.shoulderTensionReduction
+            }
             
             // Корректируем верхнюю часть тела
             for i in 11...16 { // Плечи и руки
@@ -281,44 +326,57 @@ class AnthropometryAnalyzer {
     private func calculateSkeletonOrientation(_ landmarks: [NormalizedLandmark]) -> Double {
         guard landmarks.count >= 33 else { return lastValidOrientation }
         
-        // Используем все доступные пары точек для определения ориентации
-        let orientationPairs = [
-            (11, 12), // плечи
-            (23, 24), // бедра
-            (25, 26), // колени
-            (27, 28)  // стопы
-        ]
+        var weightedOrientations: [(angle: Double, weight: Double)] = []
         
-        var validOrientations: [(angle: Double, weight: Double)] = []
-        
-        for (left, right) in orientationPairs {
-            let leftPoint = landmarks[left]
-            let rightPoint = landmarks[right]
+        // Проходим по цепочкам влияния
+        for chain in Constants.influenceChains {
+            var chainWeight: Double = 1.0
+            var lastValidPoint: Int?
             
-            // Проверяем видимость обеих точек
-            if let leftVis = leftPoint.visibility?.floatValue,
-               let rightVis = rightPoint.visibility?.floatValue,
-               leftVis > Constants.visibilityThreshold,
-               rightVis > Constants.visibilityThreshold {
+            for (i, pointIndex) in chain.enumerated() {
+                let point = landmarks[pointIndex]
                 
-                let dx = Double(rightPoint.x - leftPoint.x)
-                let dy = Double(rightPoint.y - leftPoint.y)
-                let angle = atan2(dy, dx) * 180.0 / .pi
-                let weight = Double(leftVis + rightVis) / 2.0
-                
-                validOrientations.append((angle: angle, weight: weight))
+                // Проверяем видимость и уверенность в точке
+                if let visibility = point.visibility?.floatValue,
+                   visibility > Constants.visibilityThreshold {
+                    
+                    // Если есть предыдущая валидная точка, считаем ориентацию сегмента
+                    if let lastIdx = lastValidPoint {
+                        let lastPoint = landmarks[lastIdx]
+                        
+                        // Рассчитываем угол сегмента
+                        let dx = Double(point.x - lastPoint.x)
+                        let dy = Double(point.y - lastPoint.y)
+                        let angle = atan2(dy, dx) * 180.0 / .pi
+                        
+                        // Вычисляем вес с учетом:
+                        // - массы точек
+                        // - расстояния от центра (decay)
+                        // - видимости
+                        let pointWeight = Double(Constants.jointWeights[pointIndex] ?? 0.5)
+                        let distanceDecay = pow(Double(Constants.stabilityFactors.distanceDecay), Double(i))
+                        let visibilityFactor = Double(visibility)
+                        
+                        let totalWeight = pointWeight * distanceDecay * visibilityFactor * chainWeight
+                        weightedOrientations.append((angle: angle, weight: totalWeight))
+                    }
+                    
+                    lastValidPoint = pointIndex
+                } else {
+                    // Если точка не видна, уменьшаем вес всей последующей цепочки
+                    chainWeight *= Double(Constants.stabilityFactors.lowVisibility)
+                }
             }
         }
         
-        if !validOrientations.isEmpty {
-            // Вычисляем средневзвешенную ориентацию
-            let totalWeight = validOrientations.reduce(0.0) { $0 + $1.weight }
-            let weightedSum = validOrientations.reduce(0.0) { $0 + $1.angle * $1.weight }
+        if !weightedOrientations.isEmpty {
+            let totalWeight = weightedOrientations.reduce(0.0) { $0 + $1.weight }
+            let weightedSum = weightedOrientations.reduce(0.0) { $0 + $1.angle * $1.weight }
             let newOrientation = weightedSum / totalWeight
             
-            // Плавно переходим к новой ориентации
-            let blendFactor = isStabilizing ? 0.1 : 0.3
-            return lastValidOrientation * (1.0 - blendFactor) + newOrientation * blendFactor
+            // Применяем инерцию для стабильности
+            let inertiaFactor = Double(Constants.stabilityFactors.inertiaFactor)
+            return lastValidOrientation * inertiaFactor + newOrientation * (1 - inertiaFactor)
         }
         
         return lastValidOrientation
@@ -327,33 +385,67 @@ class AnthropometryAnalyzer {
     private func stabilizeOrientation(_ landmarks: [NormalizedLandmark], targetOrientation: Double) -> [NormalizedLandmark] {
         guard landmarks.count >= 33 else { return landmarks }
         
+        var result = landmarks
+        
+        // Добавляем гибкость плечевого пояса
+        let shoulderIndices = [11, 12] // левое и правое плечо
+        if isRaisingArms {
+            for i in shoulderIndices {
+                result[i] = applyJointFlexibility(result[i],
+                                                anchor: result[i-1], // относительно соседней точки
+                                                flexibility: Constants.shoulderFlexibility)
+            }
+        }
+        
+        // Добавляем гибкость позвоночника
+        let spineIndices = [23, 24] // точки таза
+        for i in spineIndices {
+            result[i] = applyJointFlexibility(result[i],
+                                            anchor: result[i-1],
+                                            flexibility: Constants.spineFlexibility)
+        }
+        
         // Находим центр скелета (между бедрами)
-        let centerX = (landmarks[23].x + landmarks[24].x) / 2
-        let centerY = (landmarks[23].y + landmarks[24].y) / 2
+        let centerX = (result[23].x + result[24].x) / 2
+        let centerY = (result[23].y + result[24].y) / 2
         
         // Создаем матрицу поворота
-        let currentAngle = calculateSkeletonOrientation(landmarks)
+        let currentAngle = calculateSkeletonOrientation(result)
         let rotationAngle = targetOrientation - currentAngle
-        let cosAngle = Float(cos(rotationAngle * .pi / 180.0))
-        let sinAngle = Float(sin(rotationAngle * .pi / 180.0))
+        let (cosAngle, sinAngle) = NumericConversion.rotationMatrix(angle: rotationAngle)
         
-        return landmarks.map { landmark in
-            // Смещаем точку относительно центра
+        // Применяем поворот ко всем точкам
+        return result.map { landmark in
             let dx = landmark.x - centerX
             let dy = landmark.y - centerY
             
-            // Поворачиваем
-            let newX = dx * cosAngle - dy * sinAngle + centerX
-            let newY = dx * sinAngle + dy * cosAngle + centerY
-            
             return NormalizedLandmark(
-                x: newX,
-                y: newY,
+                x: dx * cosAngle - dy * sinAngle + centerX,
+                y: dx * sinAngle + dy * cosAngle + centerY,
                 z: landmark.z,
                 visibility: landmark.visibility,
                 presence: landmark.presence ?? NSNumber(value: 1.0)
             )
         }
+    }
+    
+    private func applyJointFlexibility(_ point: NormalizedLandmark,
+                                     anchor: NormalizedLandmark,
+                                     flexibility: Float) -> NormalizedLandmark {
+        let dx = point.x - anchor.x
+        let dy = point.y - anchor.y
+        
+        // Применяем гибкость к смещению
+        let flexedX = anchor.x + dx * flexibility
+        let flexedY = anchor.y + dy * flexibility
+        
+        return NormalizedLandmark(
+            x: flexedX,
+            y: flexedY,
+            z: point.z,
+            visibility: point.visibility,
+            presence: point.presence ?? NSNumber(value: 1.0)
+        )
     }
     
     private func detectAndHandleCrossover(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
@@ -443,12 +535,14 @@ class AnthropometryAnalyzer {
     private func predictPositions(_ landmarks: [NormalizedLandmark], velocities: [CGVector]) -> [NormalizedLandmark] {
         guard !velocities.isEmpty else { return landmarks }
         
-        let avgVelocity = velocities.reduce(CGVector.zero) { $0 + $1 }.scaled(by: 1.0 / Double(velocities.count))
+        let count = Double(velocities.count)
+        let avgVelocity = velocities.reduce(CGVector.zero) { $0 + $1 }.scaled(by: 1.0 / count)
+        let (dx, dy) = avgVelocity.floatComponents
         
         return landmarks.map { landmark in
             NormalizedLandmark(
-                x: landmark.x + Float(avgVelocity.dx),
-                y: landmark.y + Float(avgVelocity.dy),
+                x: landmark.x + dx,
+                y: landmark.y + dy,
                 z: landmark.z,
                 visibility: landmark.visibility,
                 presence: landmark.presence ?? NSNumber(value: 1.0)
@@ -511,7 +605,7 @@ class AnthropometryAnalyzer {
         var totalDy: Double = 0
         
         for (f, t) in zip(from, to) {
-            totalDx += Double(t.x - f.x)
+            totalDx += Double(t.x - f.x) // Явное приведение к Double
             totalDy += Double(t.y - f.y)
         }
         
@@ -550,6 +644,24 @@ class AnthropometryAnalyzer {
             )
         }
     }
+    
+    private func detectArmRaising(_ landmarks: [NormalizedLandmark]) {
+        guard landmarks.count >= 33 else { return }
+        
+        let leftWrist = landmarks[15].y
+        let rightWrist = landmarks[16].y
+        
+        if let lastPositions = lastArmPositionsY {
+            let leftDelta = lastPositions.left - leftWrist
+            let rightDelta = lastPositions.right - rightWrist
+            
+            // Определяем движение рук вверх, используя Float для сравнения
+            let threshold: Float = Float(Constants.verticalMotionThreshold)
+            isRaisingArms = leftDelta > threshold && rightDelta > threshold
+        }
+        
+        lastArmPositionsY = (leftWrist, rightWrist)
+    }
 }
 
 // Вспомогательные расширения
@@ -561,6 +673,6 @@ private extension CGVector {
     }
     
     func scaled(by factor: Double) -> CGVector {
-        return CGVector(dx: dx * factor, dy: dy * factor)
+        return CGVector(dx: self.dx * factor, dy: self.dy * factor)
     }
 }
