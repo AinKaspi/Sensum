@@ -629,7 +629,7 @@ extension CameraViewController: CameraFeedServiceDelegate {
     let now = Date()
     let elapsed = now.timeIntervalSince(lastFPSUpdateTime)
     
-    if elapsed >= 1.0 {
+    if (elapsed >= 1.0) {
       let fps = Double(frameCount) / elapsed
       DispatchQueue.main.async { [weak self] in
         if let self = self, self.isStatsVisible {
@@ -681,59 +681,68 @@ extension CameraViewController: CameraFeedServiceDelegate {
 
 // MARK: PoseLandmarkerServiceLiveStreamDelegate
 extension CameraViewController: PoseLandmarkerServiceLiveStreamDelegate {
-
-  func poseLandmarkerService(
-    _ poseLandmarkerService: PoseLandmarkerService,
-    didFinishDetection result: ResultBundle?,
-    error: Error?) {
-      DispatchQueue.main.async { [weak self] in
-        guard let weakSelf = self else { return }
-        weakSelf.inferenceResultDeliveryDelegate?.didPerformInference(result: result)
-        guard let poseLandmarkerResult = result?.poseLandmarkerResults.first as? PoseLandmarkerResult else { return }
-        
-        // Обновляем метрики для тестирования
-        if let inferenceTime = result?.inferenceTime, let landmarks = poseLandmarkerResult.landmarks.first {
-          // Добавляем данные для анализа
-          weakSelf.updateMetrics(landmarks: poseLandmarkerResult.landmarks, inferenceTime: inferenceTime)
-          
-          // Считаем видимые точки
-          var visiblePoints = 0
-          for landmark in landmarks {
-            if let visibility = landmark.visibility?.floatValue {
-              if visibility > 0.5 {
-                visiblePoints += 1
-              }
+    func poseLandmarkerService(
+        _ poseLandmarkerService: PoseLandmarkerService,
+        didFinishDetection result: ResultBundle?,
+        error: Error?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let weakSelf = self else { return }
+            weakSelf.inferenceResultDeliveryDelegate?.didPerformInference(result: result)
+            guard let poseLandmarkerResult = result?.poseLandmarkerResults.first as? PoseLandmarkerResult else { return }
+            
+            // Анализ углов для каждой найденной позы
+            for landmarks in poseLandmarkerResult.landmarks {
+                // Перемещаем отдельные точки в массив
+                let landmarksArray = Array(landmarks)
+                
+                // Обновляем метрики с учетом углов
+                if let inferenceTime = result?.inferenceTime {
+                    // Получаем углы (теперь не используем if let, так как метод всегда возвращает словарь)
+                    let angles = PoseAnalyzer.analyzePose(landmarks: landmarksArray)
+                    
+                    // Логируем углы для отладки
+                    os_log("Pose angles: %{public}@", log: weakSelf.logger, type: .debug, String(describing: angles))
+                    
+                    // Обновляем метрики
+                    weakSelf.updateMetricsWithAngles(landmarks: landmarksArray, angles: angles, inferenceTime: inferenceTime)
+                }
             }
-          }
-          
-          // Получаем среднее значение дрожания (jitter)
-          let avgJitter = weakSelf.calculateAverageJitter()
-          let jitterText = avgJitter != nil ? String(format: "%.5f", avgJitter!) : "N/A"
-          
-          // Обновляем текст метки с базовыми метриками
-          if weakSelf.isStatsVisible {
-            let inferenceTimeText = String(format: "%.2f", inferenceTime)
-            weakSelf.metricsLabel.text = "Visible: \(visiblePoints)/33\nJitter: \(jitterText)\nInf: \(inferenceTimeText)ms"
-          }
-          
-          // Периодически записываем метрики в системный лог
-          if let metrics = weakSelf.getCriticalMetrics(result: poseLandmarkerResult, inferenceTime: inferenceTime) {
-            os_log("%{public}s", log: weakSelf.logger, type: .debug, metrics)
-          }
+            
+            let imageSize = weakSelf.cameraFeedService.videoResolution
+            let poseOverlays = OverlayView.poseOverlays(
+                fromMultiplePoseLandmarks: poseLandmarkerResult.landmarks,
+                inferredOnImageOfSize: imageSize,
+                ovelayViewSize: weakSelf.overlayView.bounds.size,
+                imageContentMode: weakSelf.overlayView.imageContentMode,
+                andOrientation: UIImage.Orientation.from(
+                    deviceOrientation: UIDevice.current.orientation))
+            
+            weakSelf.overlayView.draw(
+                poseOverlays: poseOverlays,
+                inBoundsOfContentImageOfSize: imageSize,
+                imageContentMode: weakSelf.cameraFeedService.videoGravity.contentMode)
         }
+    }
+}
+
+extension CameraViewController {
+    private func updateMetricsWithAngles(landmarks: [NormalizedLandmark], angles: [String: Double], inferenceTime: Double) {
+        // Создаем новый массив из массива точек
+        let landmarksArray = [landmarks]
         
-        let imageSize = weakSelf.cameraFeedService.videoResolution
-        let poseOverlays = OverlayView.poseOverlays(
-            fromMultiplePoseLandmarks: poseLandmarkerResult.landmarks,
-          inferredOnImageOfSize: imageSize,
-          ovelayViewSize: weakSelf.overlayView.bounds.size,
-          imageContentMode: weakSelf.overlayView.imageContentMode,
-          andOrientation: UIImage.Orientation.from(
-            deviceOrientation: UIDevice.current.orientation))
-        weakSelf.overlayView.draw(poseOverlays: poseOverlays,
-                         inBoundsOfContentImageOfSize: imageSize,
-                         imageContentMode: weakSelf.cameraFeedService.videoGravity.contentMode)
-      }
+        // Обновляем базовые метрики
+        updateMetrics(landmarks: landmarksArray, inferenceTime: inferenceTime)
+        
+        // Добавляем информацию об углах в метрики
+        if self.isStatsVisible {
+            let angleText = String(format: "\nE: %.1f/%.1f K: %.1f/%.1f",
+                                 angles["leftElbow"] ?? 0,
+                                 angles["rightElbow"] ?? 0,
+                                 angles["leftKnee"] ?? 0,
+                                 angles["rightKnee"] ?? 0)
+            
+            self.metricsLabel?.text = (self.metricsLabel?.text ?? "") + angleText
+        }
     }
 }
 

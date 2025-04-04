@@ -200,6 +200,7 @@
 				DEVELOPMENT_TEAM = U6WP7S3365;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sensum/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Take a smile :)";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -229,6 +230,7 @@
 				DEVELOPMENT_TEAM = U6WP7S3365;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Sensum/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Take a smile :)";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
