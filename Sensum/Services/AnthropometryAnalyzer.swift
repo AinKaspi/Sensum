@@ -23,6 +23,9 @@ class AnthropometryAnalyzer {
         static let minVisibilityThreshold: Float = 0.5
         static let crossoverDetectionThreshold: Float = 0.1
         static let predictionWindowSize = 3
+        static let minVisiblePoints = 4 // Минимальное количество видимых точек для валидной позы
+        static let visibilityThreshold: Float = 0.5 // Порог видимости точки
+        static let stabilityTimeout: TimeInterval = 0.5 // Время удержания последней стабильной позы
     }
     
     // MARK: - Properties
@@ -40,10 +43,30 @@ class AnthropometryAnalyzer {
     private var lastValidRightArm: [NormalizedLandmark]?
     private var lastArmVelocities: [(left: CGVector, right: CGVector)] = []
     
+    // Добавляем новые свойства для отслеживания стабильности
+    private var lastStableTimestamp: TimeInterval = 0
+    private var lastStablePose: [NormalizedLandmark]?
+    private var isStabilizing = false
+    
     // MARK: - Public Methods
     
     /// Применяет антропометрические ограничения и сглаживание к ключевым точкам
     func processLandmarks(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        // Проверяем стабильность позы
+        if !isPoseStable(landmarks) {
+            isStabilizing = true
+            // Если поза нестабильна, используем последнюю стабильную позу
+            if let stablePose = lastStablePose,
+               Date().timeIntervalSince1970 - lastStableTimestamp < Constants.stabilityTimeout {
+                return interpolateTowardStablePose(current: landmarks, stable: stablePose)
+            }
+        } else {
+            // Обновляем стабильную позу
+            lastStablePose = landmarks
+            lastStableTimestamp = Date().timeIntervalSince1970
+            isStabilizing = false
+        }
+        
         // Сначала обрабатываем перекрещивания
         let crossoverHandledLandmarks = detectAndHandleCrossover(landmarks)
         
@@ -258,45 +281,47 @@ class AnthropometryAnalyzer {
     private func calculateSkeletonOrientation(_ landmarks: [NormalizedLandmark]) -> Double {
         guard landmarks.count >= 33 else { return lastValidOrientation }
         
-        // Используем плечи для определения ориентации
-        let leftShoulder = landmarks[11]
-        let rightShoulder = landmarks[12]
+        // Используем все доступные пары точек для определения ориентации
+        let orientationPairs = [
+            (11, 12), // плечи
+            (23, 24), // бедра
+            (25, 26), // колени
+            (27, 28)  // стопы
+        ]
         
-        // Вычисляем угол между плечами относительно горизонтали
-        let dx = Double(rightShoulder.x - leftShoulder.x)
-        let dy = Double(rightShoulder.y - leftShoulder.y)
-        let currentOrientation = atan2(dy, dx) * 180.0 / .pi
+        var validOrientations: [(angle: Double, weight: Double)] = []
         
-        // Проверяем видимость точек
-        let shouldersVisible = (leftShoulder.visibility?.floatValue ?? 0 > 0.5) &&
-                             (rightShoulder.visibility?.floatValue ?? 0 > 0.5)
-        
-        if !shouldersVisible {
-            return lastValidOrientation // Возвращаем последнюю валидную ориентацию
+        for (left, right) in orientationPairs {
+            let leftPoint = landmarks[left]
+            let rightPoint = landmarks[right]
+            
+            // Проверяем видимость обеих точек
+            if let leftVis = leftPoint.visibility?.floatValue,
+               let rightVis = rightPoint.visibility?.floatValue,
+               leftVis > Constants.visibilityThreshold,
+               rightVis > Constants.visibilityThreshold {
+                
+                let dx = Double(rightPoint.x - leftPoint.x)
+                let dy = Double(rightPoint.y - leftPoint.y)
+                let angle = atan2(dy, dx) * 180.0 / .pi
+                let weight = Double(leftVis + rightVis) / 2.0
+                
+                validOrientations.append((angle: angle, weight: weight))
+            }
         }
         
-        // Ограничиваем скорость поворота
-        let now = Date().timeIntervalSince1970
-        let deltaTime = now - lastUpdateTime
-        let maxDelta = maxRotationPerSecond * deltaTime
-        
-        var orientationDelta = currentOrientation - lastValidOrientation
-        
-        // Нормализуем разницу углов
-        while orientationDelta > 180 { orientationDelta -= 360 }
-        while orientationDelta < -180 { orientationDelta += 360 }
-        
-        // Ограничиваем изменение
-        if abs(orientationDelta) > maxDelta {
-            orientationDelta = orientationDelta > 0 ? maxDelta : -maxDelta
+        if !validOrientations.isEmpty {
+            // Вычисляем средневзвешенную ориентацию
+            let totalWeight = validOrientations.reduce(0.0) { $0 + $1.weight }
+            let weightedSum = validOrientations.reduce(0.0) { $0 + $1.angle * $1.weight }
+            let newOrientation = weightedSum / totalWeight
+            
+            // Плавно переходим к новой ориентации
+            let blendFactor = isStabilizing ? 0.1 : 0.3
+            return lastValidOrientation * (1.0 - blendFactor) + newOrientation * blendFactor
         }
         
-        let newOrientation = lastValidOrientation + orientationDelta
-        
-        lastValidOrientation = newOrientation
-        lastUpdateTime = now
-        
-        return newOrientation
+        return lastValidOrientation
     }
     
     private func stabilizeOrientation(_ landmarks: [NormalizedLandmark], targetOrientation: Double) -> [NormalizedLandmark] {
@@ -492,6 +517,38 @@ class AnthropometryAnalyzer {
         
         let count = Double(from.count)
         return CGVector(dx: totalDx / count, dy: totalDy / count)
+    }
+    
+    private func isPoseStable(_ landmarks: [NormalizedLandmark]) -> Bool {
+        // Проверяем ключевые точки (плечи, бедра, голова)
+        let keyPoints = [0, 11, 12, 23, 24] // индексы ключевых точек
+        var visibleCount = 0
+        
+        for index in keyPoints {
+            if let visibility = landmarks[index].visibility?.floatValue,
+               visibility > Constants.visibilityThreshold {
+                visibleCount += 1
+            }
+        }
+        
+        // Поза считается стабильной, если видно достаточное количество ключевых точек
+        return visibleCount >= Constants.minVisiblePoints
+    }
+    
+    private func interpolateTowardStablePose(current: [NormalizedLandmark], stable: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        // Используем разные факторы интерполяции для видимых и невидимых точек
+        return zip(current, stable).map { curr, stable in
+            let visibility = curr.visibility?.floatValue ?? 0
+            let factor: Float = visibility > Constants.visibilityThreshold ? 0.3 : 0.8
+            
+            return NormalizedLandmark(
+                x: curr.x * (1 - factor) + stable.x * factor,
+                y: curr.y * (1 - factor) + stable.y * factor,
+                z: curr.z * (1 - factor) + stable.z * factor,
+                visibility: visibility > Constants.visibilityThreshold ? curr.visibility : stable.visibility,
+                presence: curr.presence ?? stable.presence ?? NSNumber(value: 1.0)
+            )
+        }
     }
 }
 
