@@ -22,49 +22,204 @@ class AnthropometryAnalyzer {
     private struct Constants {
         static let minVisibilityThreshold: Float = 0.5
         static let crossoverDetectionThreshold: Float = 0.1
-        static let predictionWindowSize = 3
         static let minVisiblePoints = 4 // Минимальное количество видимых точек для валидной позы
         static let visibilityThreshold: Float = 0.5 // Порог видимости точки
         static let stabilityTimeout: TimeInterval = 0.5 // Время удержания последней стабильной позы
         
         // Добавляем константы для гибкости суставов
-        static let shoulderFlexibility: Float = 0.7  // Гибкость плечевого пояса
-        static let spineFlexibility: Float = 0.5    // Гибкость позвоночника
+        static let shoulderFlexibility: Float = 0.85  // Увеличили гибкость плечевого пояса
+        static let spineFlexibility: Float = 0.7    // Увеличили гибкость позвоночника
         static let verticalMotionThreshold = 0.1    // Порог для определения вертикального движения
         static let shoulderTensionReduction: Float = 0.3   // Уменьшение напряжения между плечами при поднятии рук
 
-        // Веса точек (имитация массы тела)
+        // Обновленные веса точек с учетом анатомии
         static let jointWeights: [Int: Float] = [
-            0: 0.8,   // голова
-            11: 0.6,  // левое плечо
+            0: 0.05,  // голова (сильно уменьшили влияние)
+            1: 0.02,  // левое ухо (минимальный вес)
+            2: 0.02,  // правое ухо
+            3: 0.02,  // левый глаз
+            4: 0.02,  // правый глаз
+            5: 0.02,  // левый рот
+            6: 0.02,  // правый рот
+            7: 0.6,   // шея (уменьшили вес)
+            11: 0.6,  // левое плечо (уменьшили с 0.8)
             12: 0.6,  // правое плечо
+            13: 0.4,  // левый локоть (уменьшили с 0.6)
+            14: 0.4,  // правый локоть
+            15: 0.3,  // левая кисть
+            16: 0.3,  // правая кисть
             23: 1.0,  // левое бедро (центр тяжести)
             24: 1.0,  // правое бедро
-            15: 0.2,  // левая кисть
-            16: 0.2,  // правая кисть
-            27: 0.4,  // левая стопа
-            28: 0.4   // правая стопа
+            27: 0.7,  // левая стопа (увеличили для лучшей стабильности)
+            28: 0.7   // правая стопа
         ]
         
-        // Цепочки влияния (от центра к конечностям)
+        // Модифицированные цепочки влияния
         static let influenceChains: [[Int]] = [
-            [23, 24, 11, 13, 15],  // центр -> левая рука
-            [23, 24, 12, 14, 16],  // центр -> правая рука
-            [23, 25, 27],          // центр -> левая нога
-            [24, 26, 28]           // центр -> правая нога
+            [23, 24, 7],          // позвоночник -> шея
+            [7, 0],               // шея -> голова (отдельная цепочка для головы)
+            [23, 24, 11, 13, 15], // тело -> левая рука
+            [23, 24, 12, 14, 16], // тело -> правая рука
+            [23, 25, 27],         // центр -> левая нога
+            [24, 26, 28]          // центр -> правая нога
         ]
         
+        // Веса стабилизации с фокусом на голову
+        static let stabilizationWeights: [Int: Float] = [
+            0: 0.8,    // Уменьшили стабилизацию головы
+            7: 0.8,    // Уменьшили стабилизацию шеи
+            11: 0.4,   // Уменьшили стабилизацию плеч
+            12: 0.4,
+            13: 0.2,   // Локти еще более свободные
+            14: 0.2,
+            15: 0.1,   // Кисти максимально свободные
+            16: 0.1
+        ]
+        
+        // Добавляем анатомические ограничения с приоритетом на голову
+        static let anatomicalConstraints: [Int: [Int]] = [
+            0: [7],           // голова привязана только к шее
+            7: [11, 12],     // шея теперь слабее связана с плечами
+            11: [7],         // плечи теперь больше связаны с шеей
+            12: [7]          // и меньше с руками
+        ]
+        
+        // Убираем кисти и локти из расчета ориентации, оставляем только стабильные точки
+        static let orientationChains: [[Int]] = [
+            [23, 24],         // таз (основная ось, максимальный вес)
+            [11, 12]          // плечи (вспомогательная ось)
+        ]
+
+        // Модифицируем веса для ориентации
+        static let orientationWeights: [Int: Float] = [
+            23: 1.0,  // таз - максимальный вес
+            24: 1.0,  // таз
+            11: 0.3,  // плечи - минимальный вес (было 0.5)
+            12: 0.3   // плечи
+        ]
+
+        // Увеличиваем инерцию для более плавных изменений
         static let stabilityFactors = (
-            lowVisibility: 0.3,    // Множитель влияния при низкой видимости
-            distanceDecay: 0.8,    // Затухание влияния с расстоянием
-            inertiaFactor: 0.7     // Фактор инерции для стабильности
+            lowVisibility: 0.3,
+            distanceDecay: 0.8,
+            inertiaFactor: 0.9     // увеличено с 0.7 до 0.9
+        )
+
+        // Оптимизируем размер буферов
+        static let smoothingWindowSize = 3  // уменьшили с 5
+        static let predictionWindowSize = 2 // уменьшили с 3
+        static let maxHistorySize = 3      // добавили ограничение на историю
+
+        // Увеличиваем стабильность таза
+        static let poseStabilityWeights: [Int: Float] = [
+            23: 0.95,  // таз
+            24: 0.95,
+            11: 0.7,   // плечи
+            12: 0.7
+        ]
+
+        // Обновляем веса для ног
+        static let legWeights: [Int: Float] = [
+            23: 1.0,  // левое бедро
+            24: 1.0,  // правое бедро
+            25: 0.7,  // левое колено
+            26: 0.7,  // правое колено
+            27: 0.5,  // левая стопа
+            28: 0.5   // правая стопа
+        ]
+
+        // Добавляем независимые цепочки для ног
+        static let legChains: [[Int]] = [
+            [23, 25, 27], // левая нога
+            [24, 26, 28]  // правая нога
+        ]
+
+        // Настройки стабилизации для ног
+        static let legStabilization = (
+            inertiaFactor: Float(0.7),     // Уменьшили инерцию для большей независимости
+            maxAngleChange: Float(10.0),    // Увеличили допустимое изменение угла
+            minVisibility: Float(0.3),     // порог видимости для ног
+            hipElasticity: Float(0.85),     // Увеличили эластичность таза
+            independentLegFactor: Float(0.9) // Увеличили независимость ног
+        )
+
+        // Настройки для обработки невидимых конечностей
+        static let invisibilityHandling = (
+            fadeOutSpeed: Float(0.8),      // скорость исчезновения
+            predictionSteps: Int(5),     // количество шагов предсказания
+            minConfidence: Float(0.2)      // минимальная уверенность для использования предсказания
+        )
+
+        // Добавляем независимые настройки для разных частей ног
+        static let legConstraints = (
+            hipWidth: Float(0.2),     // относительная ширина таза
+            kneeDistance: Float(0.15), // минимальное расстояние между коленями
+            ankleRange: Float(0.3)     // допустимый диапазон движения стоп
+        )
+
+        // Смягчаем ограничения углов
+        static let angleConstraints = (
+            elbowMax: Float(175.0),
+            kneeMax: Float(175.0),
+            shoulderMax: Float(185.0),
+            hipMax: Float(135.0),
+            minAngleInfluence: Float(0.5)  // Уменьшаем влияние ограничений углов
+        )
+
+        // Улучшаем независимость частей тела
+        static let bodyPartIndependence = (
+            headIndependence: Float(0.9),     // Голова более независима
+            shoulderIndependence: Float(0.8),  // Плечи более независимы
+            hipIndependence: Float(0.7),      // Таз более независим
+            legIndependence: Float(0.95)      // Ноги максимально независимы
+        )
+
+        // Настройки для каждой ноги отдельно
+        static let perLegSettings = (
+            kneeFlexibility: Float(0.9),      // Большая гибкость колена
+            ankleFlexibility: Float(0.95),    // Максимальная гибкость стопы
+            hipRotation: Float(0.8),          // Независимый поворот в тазобедренном
+            stabilityThreshold: Float(0.4)    // Порог стабильности для независимой обработки
+        )
+
+        // Обработка выхода из кадра
+        static let outOfFrameHandling = (
+            headDecay: Float(0.95),           // Медленное затухание головы
+            shoulderDecay: Float(0.9),        // Медленное затухание плеч
+            recoverySpeed: Float(0.3)         // Скорость восстановления
+        )
+
+        // Добавляем настройки стабилизации головы
+        static let headStabilization = (
+            neckInertia: Float(0.95),        // Сильная инерция для шеи
+            headInertia: Float(0.98),        // Очень сильная инерция для головы
+            facePointsThreshold: Float(0.4),  // Порог видимости точек лица
+            recoverySpeed: Float(0.1),        // Медленное восстановление
+            maxHeadMotion: Float(0.05),      // Ограничение движения головы за кадр
+            minNeckPoints: 2                  // Минимум видимых точек для стабилизации
+        )
+
+        // Добавляем настройки для независимости лица
+        static let faceConfiguration = (
+            minDistance: Float(0.02),      // Минимальное расстояние между точками лица
+            independenceFactor: Float(0.95) // Высокая независимость точек лица
+        )
+
+        // Добавляем настройки предсказания для лица
+        static let facePrediction = (
+            historySize: 5,          // Размер истории для предсказания
+            maxPredictionFrames: 10, // Максимальное количество кадров предсказания
+            confidence: Float(0.8),  // Уверенность в предсказании
+            smoothing: Float(0.7),   // Сглаживание предсказания
+            maxSpeed: Float(0.05)    // Максимальная скорость изменения положения
         )
     }
     
     // MARK: - Properties
     
-    private let smoothingWindowSize = 5
     private var positionHistory: [[NormalizedLandmark]] = []
+    private var lastProcessedTime: TimeInterval = 0
+    private let processingInterval: TimeInterval = 1.0/30.0 // 30fps максимум
     
     // Добавляем новые свойства для отслеживания ориентации
     private var lastValidOrientation: Double = 0
@@ -76,6 +231,11 @@ class AnthropometryAnalyzer {
     private var lastValidRightArm: [NormalizedLandmark]?
     private var lastArmVelocities: [(left: CGVector, right: CGVector)] = []
     
+    // Добавляем свойства для отслеживания ног
+    private var lastValidLeftLeg: [NormalizedLandmark]?
+    private var lastValidRightLeg: [NormalizedLandmark]?
+    private var lastLegVelocities: [(left: CGVector, right: CGVector)] = []
+
     // Добавляем новые свойства для отслеживания стабильности
     private var lastStableTimestamp: TimeInterval = 0
     private var lastStablePose: [NormalizedLandmark]?
@@ -84,11 +244,24 @@ class AnthropometryAnalyzer {
     // Добавляем отслеживание вертикального движения рук
     private var lastArmPositionsY: (left: Float, right: Float)?
     private var isRaisingArms = false
+
+    // Добавляем свойства для отслеживания точек лица
+    private var facePointsHistory: [[NormalizedLandmark]] = []
+    private var facePointsVelocities: [CGVector] = []
+    private var lastValidFacePoints: [NormalizedLandmark]?
+    private var missingFramesCount: Int = 0
     
     // MARK: - Public Methods
     
     /// Применяет антропометрические ограничения и сглаживание к ключевым точкам
     func processLandmarks(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        // Добавляем ограничение частоты обработки
+        let currentTime = Date().timeIntervalSince1970
+        if currentTime - lastProcessedTime < processingInterval {
+            return landmarks
+        }
+        lastProcessedTime = currentTime
+
         // Определяем поднятие рук
         detectArmRaising(landmarks)
         
@@ -109,11 +282,12 @@ class AnthropometryAnalyzer {
         
         // Сначала обрабатываем перекрещивания
         let crossoverHandledLandmarks = detectAndHandleCrossover(landmarks)
-        
-        // Затем применяем остальные обработки
-        let constrainedLandmarks = applyAnatomicalConstraints(crossoverHandledLandmarks)
-        let orientation = calculateSkeletonOrientation(constrainedLandmarks)
-        let stabilizedLandmarks = stabilizeOrientation(constrainedLandmarks, targetOrientation: orientation)
+        let handledLandmarks = handleOutOfFrame(crossoverHandledLandmarks)
+        let invisibilityHandledLandmarks = handleInvisibleLimbs(handledLandmarks)
+        let constrainedLandmarks = applyAnatomicalConstraints(invisibilityHandledLandmarks)
+        let stabilizedLegsLandmarks = stabilizeLegs(constrainedLandmarks)
+        let orientation = calculateSkeletonOrientation(stabilizedLegsLandmarks)
+        let stabilizedLandmarks = stabilizeOrientation(stabilizedLegsLandmarks, targetOrientation: orientation)
         let smoothedLandmarks = smoothPositions(stabilizedLandmarks)
         
         return validateAndAdjustProportions(smoothedLandmarks)
@@ -140,63 +314,50 @@ class AnthropometryAnalyzer {
     // MARK: - Private Methods
     
     private func smoothPositions(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
-        // Добавляем текущие позиции в историю
+        // Оптимизация: используем более эффективный способ сглаживания
         positionHistory.append(landmarks)
-        if positionHistory.count > smoothingWindowSize {
+        if positionHistory.count > Constants.maxHistorySize {
             positionHistory.removeFirst()
         }
         
-        // Если недостаточно истории, возвращаем текущие позиции
-        guard positionHistory.count == smoothingWindowSize else {
+        // Если история слишком короткая, возвращаем текущие позиции
+        guard positionHistory.count > 1 else {
             return landmarks
         }
+
+        // Быстрое экспоненциальное сглаживание
+        let alpha: Float = 0.3
+        let previous = positionHistory[positionHistory.count - 2]
         
-        // Применяем фильтр скользящего среднего с весами
-        return landmarks.enumerated().map { index, _ in
-            var sumX: Float = 0
-            var sumY: Float = 0
-            var sumZ: Float = 0
-            var sumVisibility: Float = 0
-            var weightSum: Float = 0
-            
-            for (historyIndex, historical) in positionHistory.enumerated() {
-                let weight = Float(historyIndex + 1)
-                sumX += historical[index].x * weight
-                sumY += historical[index].y * weight
-                sumZ += historical[index].z * weight
-                if let visibility = historical[index].visibility?.floatValue {
-                    sumVisibility += visibility * weight
-                }
-                weightSum += weight
-            }
-            
-            let smoothedLandmark = NormalizedLandmark(
-                x: sumX / weightSum,
-                y: sumY / weightSum,
-                z: sumZ / weightSum,
-                visibility: NSNumber(value: sumVisibility / weightSum),
-                presence: NSNumber(value: 1.0)  // Добавляем presence
+        return landmarks.enumerated().map { index, current in
+            NormalizedLandmark(
+                x: current.x * alpha + previous[index].x * (1 - alpha),
+                y: current.y * alpha + previous[index].y * (1 - alpha),
+                z: current.z * alpha + previous[index].z * (1 - alpha),
+                visibility: current.visibility,
+                presence: current.presence ?? NSNumber(value: 1.0)
             )
-            return smoothedLandmark
         }
     }
     
     private func validateJointAngles(_ landmarks: [NormalizedLandmark]) -> Bool {
-        // Проверяем углы в локтях
-        let leftElbowAngle = calculateAngle(landmarks[11], landmarks[13], landmarks[15])
-        let rightElbowAngle = calculateAngle(landmarks[12], landmarks[14], landmarks[16])
+        // Смягчаем проверку углов
+        let influence = Constants.angleConstraints.minAngleInfluence
         
-        if leftElbowAngle < HumanProportions.elbowRange.min || leftElbowAngle > HumanProportions.elbowRange.max ||
-           rightElbowAngle < HumanProportions.elbowRange.min || rightElbowAngle > HumanProportions.elbowRange.max {
+        // Проверяем углы с меньшей строгостью
+        let leftElbowAngle = Float(calculateAngle(landmarks[11], landmarks[13], landmarks[15]))
+        let rightElbowAngle = Float(calculateAngle(landmarks[12], landmarks[14], landmarks[16]))
+        
+        if leftElbowAngle > Constants.angleConstraints.elbowMax ||
+           rightElbowAngle > Constants.angleConstraints.elbowMax {
             return false
         }
         
-        // Проверяем углы в коленях
-        let leftKneeAngle = calculateAngle(landmarks[23], landmarks[25], landmarks[27])
-        let rightKneeAngle = calculateAngle(landmarks[24], landmarks[26], landmarks[28])
+        let leftKneeAngle = Float(calculateAngle(landmarks[23], landmarks[25], landmarks[27]))
+        let rightKneeAngle = Float(calculateAngle(landmarks[24], landmarks[26], landmarks[28]))
         
-        if leftKneeAngle < HumanProportions.kneeRange.min || leftKneeAngle > HumanProportions.kneeRange.max ||
-           rightKneeAngle < HumanProportions.kneeRange.min || rightKneeAngle > HumanProportions.kneeRange.max {
+        if leftKneeAngle > Constants.angleConstraints.kneeMax ||
+           rightKneeAngle > Constants.angleConstraints.kneeMax {
             return false
         }
         
@@ -206,15 +367,35 @@ class AnthropometryAnalyzer {
     private func applyAnatomicalConstraints(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
         var constrained = landmarks
         
-        // Применяем ограничения на углы суставов
+        // Применяем более мягкие ограничения
         if constrained.count >= 33 {
-            // Ограничиваем углы в локтях
-            constrained[13] = constrainElbowPosition(constrained[13], constrained[11], constrained[15])
-            constrained[14] = constrainElbowPosition(constrained[14], constrained[12], constrained[16])
-            
-            // Ограничиваем углы в коленях
-            constrained[25] = constrainKneePosition(constrained[25], constrained[23], constrained[27])
-            constrained[26] = constrainKneePosition(constrained[26], constrained[24], constrained[28])
+            for (pointIndex, connections) in Constants.anatomicalConstraints {
+                var avgX: Float = 0
+                var avgY: Float = 0
+                var totalWeight: Float = 0
+                
+                for connection in connections {
+                    let weight = Constants.jointWeights[connection] ?? 0.5
+                    avgX += constrained[connection].x * weight
+                    avgY += constrained[connection].y * weight
+                    totalWeight += weight
+                }
+                
+                if totalWeight > 0 {
+                    avgX /= totalWeight
+                    avgY /= totalWeight
+                    
+                    // Применяем более мягкое влияние ограничений
+                    let flexibility = Constants.spineFlexibility
+                    constrained[pointIndex] = NormalizedLandmark(
+                        x: constrained[pointIndex].x * (1 - flexibility) + avgX * flexibility,
+                        y: constrained[pointIndex].y * (1 - flexibility) + avgY * flexibility,
+                        z: constrained[pointIndex].z,
+                        visibility: constrained[pointIndex].visibility,
+                        presence: constrained[pointIndex].presence
+                    )
+                }
+            }
         }
         
         return constrained
@@ -326,57 +507,68 @@ class AnthropometryAnalyzer {
     private func calculateSkeletonOrientation(_ landmarks: [NormalizedLandmark]) -> Double {
         guard landmarks.count >= 33 else { return lastValidOrientation }
         
-        var weightedOrientations: [(angle: Double, weight: Double)] = []
-        
-        // Проходим по цепочкам влияния
-        for chain in Constants.influenceChains {
-            var chainWeight: Double = 1.0
-            var lastValidPoint: Int?
+        // Проверяем стабильность таза
+        if let vis23 = landmarks[23].visibility?.floatValue,
+           let vis24 = landmarks[24].visibility?.floatValue,
+           vis23 > Constants.visibilityThreshold,
+           vis24 > Constants.visibilityThreshold {
             
-            for (i, pointIndex) in chain.enumerated() {
-                let point = landmarks[pointIndex]
-                
-                // Проверяем видимость и уверенность в точке
-                if let visibility = point.visibility?.floatValue,
-                   visibility > Constants.visibilityThreshold {
-                    
-                    // Если есть предыдущая валидная точка, считаем ориентацию сегмента
-                    if let lastIdx = lastValidPoint {
-                        let lastPoint = landmarks[lastIdx]
-                        
-                        // Рассчитываем угол сегмента
-                        let dx = Double(point.x - lastPoint.x)
-                        let dy = Double(point.y - lastPoint.y)
-                        let angle = atan2(dy, dx) * 180.0 / .pi
-                        
-                        // Вычисляем вес с учетом:
-                        // - массы точек
-                        // - расстояния от центра (decay)
-                        // - видимости
-                        let pointWeight = Double(Constants.jointWeights[pointIndex] ?? 0.5)
-                        let distanceDecay = pow(Double(Constants.stabilityFactors.distanceDecay), Double(i))
-                        let visibilityFactor = Double(visibility)
-                        
-                        let totalWeight = pointWeight * distanceDecay * visibilityFactor * chainWeight
-                        weightedOrientations.append((angle: angle, weight: totalWeight))
-                    }
-                    
-                    lastValidPoint = pointIndex
-                } else {
-                    // Если точка не видна, уменьшаем вес всей последующей цепочки
-                    chainWeight *= Double(Constants.stabilityFactors.lowVisibility)
-                }
+            // Если таз видим, используем только его для ориентации
+            let dx = Double(landmarks[24].x - landmarks[23].x)
+            let dy = Double(landmarks[24].y - landmarks[23].y)
+            let hipOrientation = atan2(dy, dx) * 180.0 / .pi
+            
+            // Добавляем сильную инерцию для таза
+            let hipInertiaFactor = 0.95
+            let newHipOrientation = lastValidOrientation * hipInertiaFactor + hipOrientation * (1 - hipInertiaFactor)
+            
+            // Проверяем резкие изменения ориентации
+            let orientationDelta = abs(newHipOrientation - lastValidOrientation)
+            if orientationDelta > 45.0 { // Если изменение больше 45 градусов
+                // Используем более плавный переход
+                let sign = (newHipOrientation - lastValidOrientation) > 0 ? 1.0 : -1.0
+                return lastValidOrientation + sign * min(5.0, orientationDelta * 0.1)
+            }
+            
+            return newHipOrientation
+        }
+        
+        // Если таз не видим, используем комбинацию плеч и предыдущей ориентации
+        var weightedOrientations: [(angle: Double, weight: Double)] = []
+        let shoulderWeight = 0.2 // Уменьшаем вес плеч
+        
+        // Проверяем плечи только если они достаточно стабильны
+        if let vis11 = landmarks[11].visibility?.floatValue,
+           let vis12 = landmarks[12].visibility?.floatValue,
+           vis11 > Constants.visibilityThreshold * 1.2, // Увеличиваем порог для плеч
+           vis12 > Constants.visibilityThreshold * 1.2 {
+            
+            let dx = Double(landmarks[12].x - landmarks[11].x)
+            let dy = Double(landmarks[12].y - landmarks[11].y)
+            let shoulderOrientation = atan2(dy, dx) * 180.0 / .pi
+            
+            // Проверяем согласованность с предыдущей ориентацией
+            let deltaFromLast = abs(shoulderOrientation - lastValidOrientation)
+            if deltaFromLast < 30.0 { // Игнорируем слишком большие изменения
+                weightedOrientations.append((angle: shoulderOrientation, weight: shoulderWeight))
             }
         }
+        
+        // Всегда учитываем предыдущую ориентацию с большим весом
+        let previousWeight = 0.8 // Увеличиваем вес предыдущей ориентации
+        weightedOrientations.append((angle: lastValidOrientation, weight: previousWeight))
         
         if !weightedOrientations.isEmpty {
             let totalWeight = weightedOrientations.reduce(0.0) { $0 + $1.weight }
             let weightedSum = weightedOrientations.reduce(0.0) { $0 + $1.angle * $1.weight }
             let newOrientation = weightedSum / totalWeight
             
-            // Применяем инерцию для стабильности
-            let inertiaFactor = Double(Constants.stabilityFactors.inertiaFactor)
-            return lastValidOrientation * inertiaFactor + newOrientation * (1 - inertiaFactor)
+            // Ограничиваем максимальное изменение ориентации
+            let maxChange = 3.0 // Уменьшаем максимальное изменение за кадр
+            let delta = newOrientation - lastValidOrientation
+            let clampedDelta = max(-maxChange, min(maxChange, delta))
+            
+            return lastValidOrientation + clampedDelta
         }
         
         return lastValidOrientation
@@ -387,28 +579,95 @@ class AnthropometryAnalyzer {
         
         var result = landmarks
         
-        // Добавляем гибкость плечевого пояса
-        let shoulderIndices = [11, 12] // левое и правое плечо
-        if isRaisingArms {
-            for i in shoulderIndices {
-                result[i] = applyJointFlexibility(result[i],
-                                                anchor: result[i-1], // относительно соседней точки
-                                                flexibility: Constants.shoulderFlexibility)
-            }
+        // Сначала стабилизируем голову и шею
+        if let headIndex = Constants.anatomicalConstraints[0],
+           let neckIndex = Constants.anatomicalConstraints[7] {
+            let headWeight = Constants.stabilizationWeights[0] ?? 0.95
+            let neckWeight = Constants.stabilizationWeights[7] ?? 0.9
+            
+            // Стабилизация шеи относительно плеч
+            let avgShoulderX = (result[11].x + result[12].x) / 2
+            let avgShoulderY = (result[11].y + result[12].y) / 2
+            
+            result[7] = NormalizedLandmark(
+                x: result[7].x * (1 - neckWeight) + avgShoulderX * neckWeight,
+                y: result[7].y * (1 - neckWeight) + avgShoulderY * neckWeight,
+                z: result[7].z,
+                visibility: result[7].visibility,
+                presence: result[7].presence
+            )
+            
+            // Стабилизация головы относительно шеи
+            result[0] = NormalizedLandmark(
+                x: result[0].x * (1 - headWeight) + result[7].x * headWeight,
+                y: result[0].y * (1 - headWeight) + result[7].y * headWeight,
+                z: result[0].z,
+                visibility: result[0].visibility,
+                presence: result[0].presence
+            )
         }
-        
-        // Добавляем гибкость позвоночника
-        let spineIndices = [23, 24] // точки таза
-        for i in spineIndices {
-            result[i] = applyJointFlexibility(result[i],
-                                            anchor: result[i-1],
-                                            flexibility: Constants.spineFlexibility)
-        }
-        
-        // Находим центр скелета (между бедрами)
+
+        // Далее применяем стандартную стабилизацию для остального тела
+        // Находим центр тела (между бедрами)
         let centerX = (result[23].x + result[24].x) / 2
         let centerY = (result[23].y + result[24].y) / 2
         
+        // Применяем стабилизацию с учетом анатомических весов
+        for (pointIndex, weight) in Constants.stabilizationWeights {
+            if let constraints = Constants.anatomicalConstraints[pointIndex] {
+                // Получаем среднее положение от связанных точек
+                var avgX: Float = 0
+                var avgY: Float = 0
+                var totalWeight: Float = 0
+                
+                for constrainedPoint in constraints {
+                    let constraintWeight = Constants.jointWeights[constrainedPoint] ?? 0.5
+                    avgX += result[constrainedPoint].x * constraintWeight
+                    avgY += result[constrainedPoint].y * constraintWeight
+                    totalWeight += constraintWeight
+                }
+                
+                if totalWeight > 0 {
+                    avgX /= totalWeight
+                    avgY /= totalWeight
+                    
+                    // Создаем новый landmark вместо модификации существующего
+                    let landmark = result[pointIndex]
+                    let stabilizedX = landmark.x * (1 - weight) + avgX * weight
+                    let stabilizedY = landmark.y * (1 - weight) + avgY * weight
+                    
+                    result[pointIndex] = NormalizedLandmark(
+                        x: stabilizedX,
+                        y: stabilizedY,
+                        z: landmark.z,
+                        visibility: landmark.visibility,
+                        presence: landmark.presence ?? NSNumber(value: 1.0)
+                    )
+                }
+            }
+        }
+        
+        // Стабилизируем таз отдельно с повышенной жесткостью
+        let hipCenterX = (result[23].x + result[24].x) / 2
+        let hipCenterY = (result[23].y + result[24].y) / 2
+        let hipWidth = abs(result[23].x - result[24].x)
+        
+        result[23] = NormalizedLandmark(
+            x: hipCenterX - hipWidth / 2,
+            y: hipCenterY,
+            z: result[23].z,
+            visibility: result[23].visibility,
+            presence: result[23].presence
+        )
+        
+        result[24] = NormalizedLandmark(
+            x: hipCenterX + hipWidth / 2,
+            y: hipCenterY,
+            z: result[24].z,
+            visibility: result[24].visibility,
+            presence: result[24].presence
+        )
+
         // Создаем матрицу поворота
         let currentAngle = calculateSkeletonOrientation(result)
         let rotationAngle = targetOrientation - currentAngle
@@ -661,6 +920,269 @@ class AnthropometryAnalyzer {
         }
         
         lastArmPositionsY = (leftWrist, rightWrist)
+    }
+
+    private func stabilizeLegs(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        var result = landmarks
+        let originalPositions = landmarks
+        
+        // Индексы ключевых точек для ног
+        let leftLegPoints = [23, 25, 27] // левое бедро, колено, стопа
+        let rightLegPoints = [24, 26, 28] // правое бедро, колено, стопа
+        
+        // Получаем текущие позиции ног
+        let leftLeg = leftLegPoints.map { result[$0] }
+        let rightLeg = rightLegPoints.map { result[$0] }
+        
+        // Определяем пересечение ног
+        if areLegsCrossing(leftLeg, rightLeg) {
+            if let lastLeft = lastValidLeftLeg,
+               let lastRight = lastValidRightLeg,
+               !lastLegVelocities.isEmpty {
+                
+                // Предсказываем позиции на основе предыдущих движений
+                let predictedLeft = predictPositions(lastLeft, velocities: lastLegVelocities.map { $0.left })
+                let predictedRight = predictPositions(lastRight, velocities: lastLegVelocities.map { $0.right })
+                
+                // Определяем, какие точки к какой ноге ближе
+                let distanceToLeftPrediction = distance(between: leftLeg, and: predictedLeft)
+                let distanceToRightPrediction = distance(between: leftLeg, and: predictedRight)
+                
+                if distanceToLeftPrediction > distanceToRightPrediction {
+                    // Меняем точки местами с плавным переходом
+                    for (i, leftIdx) in leftLegPoints.enumerated() {
+                        let rightIdx = rightLegPoints[i]
+                        let interpolatedLeft = interpolateLandmarks(from: result[rightIdx], to: predictedLeft[i], factor: 0.7)
+                        let interpolatedRight = interpolateLandmarks(from: result[leftIdx], to: predictedRight[i], factor: 0.7)
+                        result[leftIdx] = interpolatedLeft
+                        result[rightIdx] = interpolatedRight
+                    }
+                }
+            }
+        } else {
+            // Если пересечения нет, сохраняем позиции
+            lastValidLeftLeg = leftLeg
+            lastValidRightLeg = rightLeg
+            updateLegVelocities(leftLeg: leftLeg, rightLeg: rightLeg)
+        }
+        
+        // Обрабатываем каждую ногу независимо
+        for chain in Constants.legChains {
+            // ... существующий код обработки ног ...
+        }
+        
+        // Исправляем ошибку с изменением x координаты
+        let minKneeDistance = Constants.legConstraints.kneeDistance * 0.5
+        let kneeDistance = abs(result[25].x - result[26].x)
+        
+        if kneeDistance < minKneeDistance {
+            let correction = (minKneeDistance - kneeDistance) * 0.2
+            
+            // Создаем новые лендмарки вместо модификации существующих
+            result[25] = NormalizedLandmark(
+                x: result[25].x - correction,
+                y: result[25].y,
+                z: result[25].z,
+                visibility: result[25].visibility,
+                presence: result[25].presence
+            )
+            
+            result[26] = NormalizedLandmark(
+                x: result[26].x + correction,
+                y: result[26].y,
+                z: result[26].z,
+                visibility: result[26].visibility,
+                presence: result[26].presence
+            )
+        }
+        
+        return result
+    }
+
+    private func handleInvisibleLimbs(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        var result = landmarks
+        
+        // Добавляем особую обработку головы и лица
+        let facePoints = [0, 1, 2, 3, 4, 5, 6, 7] // Точки головы и лица
+        var visibleFacePoints = 0
+        var needsPrediction = false
+        
+        // Проверяем видимость точек лица
+        for pointIndex in facePoints {
+            if let visibility = result[pointIndex].visibility?.floatValue,
+               visibility > Constants.headStabilization.facePointsThreshold {
+                visibleFacePoints += 1
+            }
+        }
+        
+        // Если большинство точек лица не видно, используем предсказание
+        if visibleFacePoints < Constants.headStabilization.minNeckPoints {
+            needsPrediction = true
+            missingFramesCount += 1
+        } else {
+            // Обновляем историю и скорости точек лица
+            let currentFacePoints = facePoints.map { result[$0] }
+            facePointsHistory.append(currentFacePoints)
+            if facePointsHistory.count > Constants.facePrediction.historySize {
+                facePointsHistory.removeFirst()
+            }
+            
+            // Обновляем скорости
+            if let lastPoints = lastValidFacePoints {
+                let velocities = zip(lastPoints, currentFacePoints).map { last, current in
+                    CGVector(
+                        dx: Double(current.x - last.x),
+                        dy: Double(current.y - last.y)
+                    )
+                }
+                facePointsVelocities = velocities
+            }
+            
+            lastValidFacePoints = currentFacePoints
+            missingFramesCount = 0
+        }
+        
+        // Если нужно предсказание и у нас есть история
+        if needsPrediction && missingFramesCount <= Constants.facePrediction.maxPredictionFrames,
+           let lastValid = lastValidFacePoints,
+           !facePointsVelocities.isEmpty {
+            
+            // Предсказываем новые позиции для каждой точки лица
+            for (i, pointIndex) in facePoints.enumerated() {
+                let velocity = facePointsVelocities[i]
+                let lastPoint = lastValid[i]
+                
+                // Ограничиваем скорость изменения положения
+                let dx = Float(velocity.dx)
+                let dy = Float(velocity.dy)
+                let speed = sqrt(dx * dx + dy * dy)
+                let speedFactor = speed > Constants.facePrediction.maxSpeed ?
+                    Constants.facePrediction.maxSpeed / speed : 1.0
+                
+                // Применяем предсказание с затуханием
+                let decayFactor = pow(Constants.facePrediction.smoothing,
+                                    Float(missingFramesCount))
+                
+                let predictedX = lastPoint.x + dx * speedFactor * decayFactor
+                let predictedY = lastPoint.y + dy * speedFactor * decayFactor
+                
+                result[pointIndex] = NormalizedLandmark(
+                    x: predictedX,
+                    y: predictedY,
+                    z: lastPoint.z,
+                    visibility: NSNumber(value: Constants.facePrediction.confidence * decayFactor),
+                    presence: lastPoint.presence
+                )
+            }
+        }
+        
+        // Обрабатываем остальные конечности
+        let limbs = [15, 16, 27, 28] // кисти и стопы
+        for limbIndex in limbs {
+            if let visibility = result[limbIndex].visibility?.floatValue,
+               visibility < Constants.invisibilityHandling.minConfidence,
+               let lastStable = lastStablePose?[limbIndex] {
+                
+                result[limbIndex] = NormalizedLandmark(
+                    x: result[limbIndex].x * (1 - Constants.invisibilityHandling.fadeOutSpeed) +
+                       lastStable.x * Constants.invisibilityHandling.fadeOutSpeed,
+                    y: result[limbIndex].y,  // Сохраняем Y для плавности
+                    z: result[limbIndex].z,
+                    visibility: NSNumber(value: visibility),
+                    presence: result[limbIndex].presence
+                )
+            }
+        }
+
+        // Добавляем проверку минимального расстояния между точками лица
+        let facePointsIndices = [1, 2, 3, 4, 5, 6] // Точки лица (без головы и шеи)
+        for i in 0..<facePointsIndices.count {
+            for j in (i + 1)..<facePointsIndices.count {
+                let p1 = result[facePointsIndices[i]]
+                let p2 = result[facePointsIndices[j]]
+                
+                let dx = p2.x - p1.x
+                let dy = p2.y - p1.y
+                let distance = sqrt(dx * dx + dy * dy)
+                
+                // Если точки слишком близко, отодвигаем их
+                if distance < Constants.faceConfiguration.minDistance {
+                    let factor = Constants.faceConfiguration.minDistance / max(distance, 0.001)
+                    let offsetX = dx * (factor - 1) * 0.5
+                    let offsetY = dy * (factor - 1) * 0.5
+                    
+                    // Смещаем точки в противоположных направлениях
+                    result[facePointsIndices[i]] = NormalizedLandmark(
+                        x: p1.x - offsetX,
+                        y: p1.y - offsetY,
+                        z: p1.z,
+                        visibility: p1.visibility,
+                        presence: p1.presence
+                    )
+                    
+                    result[facePointsIndices[j]] = NormalizedLandmark(
+                        x: p2.x + offsetX,
+                        y: p2.y + offsetY,
+                        z: p2.z,
+                        visibility: p2.visibility,
+                        presence: p2.presence
+                    )
+                }
+            }
+        }
+        
+        return result
+    }
+
+    private func handleOutOfFrame(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        var result = landmarks
+        
+        // Специальная обработка головы при выходе из кадра
+        if let headVis = result[0].visibility?.floatValue,
+           headVis < Constants.visibilityThreshold,
+           let lastStable = lastStablePose?[0] {
+            
+            let decay = Constants.outOfFrameHandling.headDecay
+            result[0] = NormalizedLandmark(
+                x: result[0].x * (1 - decay) + lastStable.x * decay,
+                y: result[0].y,  // Сохраняем Y для плавности
+                z: result[0].z,
+                visibility: result[0].visibility,
+                presence: result[0].presence
+            )
+        }
+        
+        return result
+    }
+
+    private func areLegsCrossing(_ leftLeg: [NormalizedLandmark], _ rightLeg: [NormalizedLandmark]) -> Bool {
+        let leftSegments = zip(leftLeg.dropLast(), leftLeg.dropFirst())
+        let rightSegments = zip(rightLeg.dropLast(), rightLeg.dropFirst())
+        
+        for (l1, l2) in leftSegments {
+            for (r1, r2) in rightSegments {
+                if segmentsIntersect(p1: (l1.x, l1.y), p2: (l2.x, l2.y),
+                                   p3: (r1.x, r1.y), p4: (r2.x, r2.y)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func updateLegVelocities(leftLeg: [NormalizedLandmark], rightLeg: [NormalizedLandmark]) {
+        guard let lastLeft = self.lastValidLeftLeg,
+              let lastRight = self.lastValidRightLeg else {
+            return
+        }
+        
+        let leftVelocity = self.calculateVelocity(from: lastLeft, to: leftLeg)
+        let rightVelocity = self.calculateVelocity(from: lastRight, to: rightLeg)
+        
+        self.lastLegVelocities.append((left: leftVelocity, right: rightVelocity))
+        if self.lastLegVelocities.count > Constants.predictionWindowSize {
+            self.lastLegVelocities.removeFirst()
+        }
     }
 }
 
