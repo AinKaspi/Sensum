@@ -18,6 +18,13 @@ class AnthropometryAnalyzer {
         static let shoulderRange = (min: -90.0, max: 180.0)
     }
     
+    // Добавляем новые константы
+    private struct Constants {
+        static let minVisibilityThreshold: Float = 0.5
+        static let crossoverDetectionThreshold: Float = 0.1
+        static let predictionWindowSize = 3
+    }
+    
     // MARK: - Properties
     
     private let smoothingWindowSize = 5
@@ -28,23 +35,24 @@ class AnthropometryAnalyzer {
     private var lastUpdateTime: TimeInterval = 0
     private let maxRotationPerSecond = 90.0 // Максимальный угол поворота в градусах в секунду
     
+    // Добавляем свойства для отслеживания конечностей
+    private var lastValidLeftArm: [NormalizedLandmark]?
+    private var lastValidRightArm: [NormalizedLandmark]?
+    private var lastArmVelocities: [(left: CGVector, right: CGVector)] = []
+    
     // MARK: - Public Methods
     
     /// Применяет антропометрические ограничения и сглаживание к ключевым точкам
     func processLandmarks(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
-        // Получаем текущую ориентацию скелета
-        let orientation = calculateSkeletonOrientation(landmarks)
+        // Сначала обрабатываем перекрещивания
+        let crossoverHandledLandmarks = detectAndHandleCrossover(landmarks)
         
-        // Применяем существующие ограничения
-        let constrainedLandmarks = applyAnatomicalConstraints(landmarks)
-        
-        // Стабилизируем ориентацию
+        // Затем применяем остальные обработки
+        let constrainedLandmarks = applyAnatomicalConstraints(crossoverHandledLandmarks)
+        let orientation = calculateSkeletonOrientation(constrainedLandmarks)
         let stabilizedLandmarks = stabilizeOrientation(constrainedLandmarks, targetOrientation: orientation)
-        
-        // Сглаживаем движения
         let smoothedLandmarks = smoothPositions(stabilizedLandmarks)
         
-        // Применяем проверку пропорций
         return validateAndAdjustProportions(smoothedLandmarks)
     }
     
@@ -321,5 +329,181 @@ class AnthropometryAnalyzer {
                 presence: landmark.presence ?? NSNumber(value: 1.0)
             )
         }
+    }
+    
+    private func detectAndHandleCrossover(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        var result = landmarks
+        
+        guard result.count >= 33 else { return result }
+        
+        // Индексы ключевых точек для рук
+        let leftArmPoints = [11, 13, 15] // левое плечо, локоть, запястье
+        let rightArmPoints = [12, 14, 16] // правое плечо, локоть, запястье
+        
+        // Получаем текущие позиции рук
+        let leftArm = leftArmPoints.map { result[$0] }
+        let rightArm = rightArmPoints.map { result[$0] }
+        
+        // Определяем, происходит ли перекрещивание
+        if isCrossing(leftArm, rightArm) {
+            // Если есть предыдущие валидные позиции и скорости
+            if let lastLeft = lastValidLeftArm,
+               let lastRight = lastValidRightArm,
+               !lastArmVelocities.isEmpty {
+                
+                // Предсказываем ожидаемые позиции на основе предыдущих движений
+                let predictedLeft = predictPositions(lastLeft, velocities: lastArmVelocities.map { $0.left })
+                let predictedRight = predictPositions(lastRight, velocities: lastArmVelocities.map { $0.right })
+                
+                // Определяем, какие точки к какой руке ближе
+                let distanceToLeftPrediction = distance(between: leftArm, and: predictedLeft)
+                let distanceToRightPrediction = distance(between: leftArm, and: predictedRight)
+                
+                // Если текущие точки ближе к предсказанным позициям противоположной руки,
+                // значит произошла путаница и нужно их поменять местами
+                if distanceToLeftPrediction > distanceToRightPrediction {
+                    // Меняем точки местами с плавным переходом
+                    for (i, leftIdx) in leftArmPoints.enumerated() {
+                        let rightIdx = rightArmPoints[i]
+                        let interpolatedLeft = interpolateLandmarks(from: result[rightIdx], to: predictedLeft[i], factor: 0.7)
+                        let interpolatedRight = interpolateLandmarks(from: result[leftIdx], to: predictedRight[i], factor: 0.7)
+                        result[leftIdx] = interpolatedLeft
+                        result[rightIdx] = interpolatedRight
+                    }
+                }
+            }
+        } else {
+            // Если перекрещивания нет, сохраняем позиции как валидные
+            lastValidLeftArm = leftArm
+            lastValidRightArm = rightArm
+            
+            // Обновляем скорости
+            updateVelocities(leftArm: leftArm, rightArm: rightArm)
+        }
+        
+        return result
+    }
+    
+    private func isCrossing(_ leftArm: [NormalizedLandmark], _ rightArm: [NormalizedLandmark]) -> Bool {
+        // Проверяем пересечение между сегментами рук
+        let leftSegments = zip(leftArm.dropLast(), leftArm.dropFirst())
+        let rightSegments = zip(rightArm.dropLast(), rightArm.dropFirst())
+        
+        for (l1, l2) in leftSegments {
+            for (r1, r2) in rightSegments {
+                if segmentsIntersect(p1: (l1.x, l1.y), p2: (l2.x, l2.y),
+                                   p3: (r1.x, r1.y), p4: (r2.x, r2.y)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+    
+    private func updateVelocities(leftArm: [NormalizedLandmark], rightArm: [NormalizedLandmark]) {
+        guard let lastLeft = lastValidLeftArm,
+              let lastRight = lastValidRightArm else {
+            return
+        }
+        
+        let leftVelocity = calculateVelocity(from: lastLeft, to: leftArm)
+        let rightVelocity = calculateVelocity(from: lastRight, to: rightArm)
+        
+        lastArmVelocities.append((left: leftVelocity, right: rightVelocity))
+        if lastArmVelocities.count > Constants.predictionWindowSize {
+            lastArmVelocities.removeFirst()
+        }
+    }
+    
+    private func predictPositions(_ landmarks: [NormalizedLandmark], velocities: [CGVector]) -> [NormalizedLandmark] {
+        guard !velocities.isEmpty else { return landmarks }
+        
+        let avgVelocity = velocities.reduce(CGVector.zero) { $0 + $1 }.scaled(by: 1.0 / Double(velocities.count))
+        
+        return landmarks.map { landmark in
+            NormalizedLandmark(
+                x: landmark.x + Float(avgVelocity.dx),
+                y: landmark.y + Float(avgVelocity.dy),
+                z: landmark.z,
+                visibility: landmark.visibility,
+                presence: landmark.presence ?? NSNumber(value: 1.0)
+            )
+        }
+    }
+    
+    private func interpolateLandmarks(from: NormalizedLandmark, to: NormalizedLandmark, factor: Float) -> NormalizedLandmark {
+        return NormalizedLandmark(
+            x: from.x + (to.x - from.x) * factor,
+            y: from.y + (to.y - from.y) * factor,
+            z: from.z + (to.z - from.z) * factor,
+            visibility: from.visibility,
+            presence: from.presence ?? NSNumber(value: 1.0)
+        )
+    }
+    
+    // Добавляем недостающие вспомогательные методы
+    private func distance(between points1: [NormalizedLandmark], and points2: [NormalizedLandmark]) -> Float {
+        guard points1.count == points2.count else { return Float.infinity }
+        
+        var totalDistance: Float = 0
+        for (p1, p2) in zip(points1, points2) {
+            let dx = p1.x - p2.x
+            let dy = p1.y - p2.y
+            let dz = p1.z - p2.z
+            totalDistance += sqrt(dx * dx + dy * dy + dz * dz)
+        }
+        
+        return totalDistance / Float(points1.count)
+    }
+    
+    private func segmentsIntersect(p1: (Float, Float), p2: (Float, Float),
+                                 p3: (Float, Float), p4: (Float, Float)) -> Bool {
+        // Вычисляем векторы
+        let v1 = (x: p2.0 - p1.0, y: p2.1 - p1.1)
+        let v2 = (x: p4.0 - p3.0, y: p4.1 - p3.1)
+        
+        // Вычисляем определитель
+        let det = v1.x * v2.y - v1.y * v2.x
+        
+        // Если определитель близок к нулю, линии параллельны
+        if abs(det) < 1e-6 { return false }
+        
+        // Вычисляем разницу между начальными точками
+        let diff = (x: p3.0 - p1.0, y: p3.1 - p1.1)
+        
+        // Вычисляем параметры пересечения
+        let t = (diff.x * v2.y - diff.y * v2.x) / det
+        let u = (diff.x * v1.y - diff.y * v1.x) / det
+        
+        // Проверяем, находится ли точка пересечения внутри обоих отрезков
+        return t >= 0 && t <= 1 && u >= 0 && u <= 1
+    }
+    
+    private func calculateVelocity(from: [NormalizedLandmark], to: [NormalizedLandmark]) -> CGVector {
+        guard from.count == to.count && !from.isEmpty else { return .zero }
+        
+        var totalDx: Double = 0
+        var totalDy: Double = 0
+        
+        for (f, t) in zip(from, to) {
+            totalDx += Double(t.x - f.x)
+            totalDy += Double(t.y - f.y)
+        }
+        
+        let count = Double(from.count)
+        return CGVector(dx: totalDx / count, dy: totalDy / count)
+    }
+}
+
+// Вспомогательные расширения
+private extension CGVector {
+    static var zero: CGVector { CGVector(dx: 0, dy: 0) }
+    
+    static func + (lhs: CGVector, rhs: CGVector) -> CGVector {
+        return CGVector(dx: lhs.dx + rhs.dx, dy: lhs.dy + rhs.dy)
+    }
+    
+    func scaled(by factor: Double) -> CGVector {
+        return CGVector(dx: dx * factor, dy: dy * factor)
     }
 }
