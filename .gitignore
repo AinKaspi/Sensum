@@ -1,0 +1,4 @@
+*.xcworkspace
+Pods/
+*.task
+*.DS_Store
