@@ -12,7 +12,7 @@ class AnthropometryAnalyzer {
         static let kneeToHeight = 0.285       // Колени на уровне ~28.5% от роста
         
         // Допустимые диапазоны движения суставов (в градусах)
-        static let elbowRange = (min: 0.0, max: 160.0)
+        static let elbowRange = (min: -10.0, max: 175.0)  // Уменьшили минимальный угол, увеличили максимальный
         static let kneeRange = (min: 0.0, max: 170.0)
         static let hipRange = (min: -20.0, max: 120.0)
         static let shoulderRange = (min: -90.0, max: 180.0)
@@ -34,18 +34,18 @@ class AnthropometryAnalyzer {
 
         // Обновленные веса точек с учетом анатомии
         static let jointWeights: [Int: Float] = [
-            0: 0.05,  // голова (сильно уменьшили влияние)
-            1: 0.02,  // левое ухо (минимальный вес)
-            2: 0.02,  // правое ухо
-            3: 0.02,  // левый глаз
-            4: 0.02,  // правый глаз
-            5: 0.02,  // левый рот
-            6: 0.02,  // правый рот
-            7: 0.6,   // шея (уменьшили вес)
+            0: 0.0,   // голова (нет влияния)
+            1: 0.0,   // левое ухо
+            2: 0.0,   // правое ухо
+            3: 0.0,   // левый глаз
+            4: 0.0,   // правый глаз
+            5: 0.0,   // левый рот
+            6: 0.0,   // правый рот
+            7: 0.8,   // шея (увеличили вес)
             11: 0.6,  // левое плечо (уменьшили с 0.8)
             12: 0.6,  // правое плечо
-            13: 0.4,  // левый локоть (уменьшили с 0.6)
-            14: 0.4,  // правый локоть
+            13: 0.2,  // левый локоть (уменьшили с 0.4)
+            14: 0.2,  // правый локоть (уменьшили с 0.4)
             15: 0.3,  // левая кисть
             16: 0.3,  // правая кисть
             23: 1.0,  // левое бедро (центр тяжести)
@@ -78,10 +78,11 @@ class AnthropometryAnalyzer {
         
         // Добавляем анатомические ограничения с приоритетом на голову
         static let anatomicalConstraints: [Int: [Int]] = [
-            0: [7],           // голова привязана только к шее
-            7: [11, 12],     // шея теперь слабее связана с плечами
-            11: [7],         // плечи теперь больше связаны с шеей
-            12: [7]          // и меньше с руками
+            7: [11, 12],     // шея связана только с плечами
+            11: [7, 13],     // плечи -> локти
+            12: [7, 14],
+            13: [15],        // локти -> запястья
+            14: [16]
         ]
         
         // Убираем кисти и локти из расчета ориентации, оставляем только стабильные точки
@@ -213,6 +214,51 @@ class AnthropometryAnalyzer {
             smoothing: Float(0.7),   // Сглаживание предсказания
             maxSpeed: Float(0.05)    // Максимальная скорость изменения положения
         )
+
+        // Добавляем настройки для обработки глубины
+        static let depthHandling = (
+            minZDifference: Float(0.1),    // Минимальная разница по Z для определения порядка
+            crossoverZThreshold: Float(0.2), // Порог Z для игнорирования пересечений
+            confidenceWeight: Float(0.7),    // Вес уверенности в Z-координате
+            smoothingFactor: Float(0.8)      // Сглаживание изменений по Z
+        )
+
+        // Обновляем настройки эластичности рук
+        static let armElasticity = (
+            maxStretch: Float(0.3),         // Максимальное растяжение (30% от базовой длины)
+            stretchSpeed: Float(0.15),      // Скорость растяжения
+            recoverySpeed: Float(0.08),     // Скорость возврата
+            distanceWeight: Float(0.7),     // Вес расстояния от тела
+            velocityWeight: Float(0.3),     // Вес скорости движения
+            smoothing: Float(0.85)          // Сглаживание растяжения
+        )
+
+        // Добавляем общие настройки предсказания для всех точек
+        static let predictiveTracking = (
+            historySize: 5,                 // Размер истории для предсказания
+            maxPredictionFrames: 15,        // Максимальное количество кадров предсказания
+            baseConfidence: Float(0.9),     // Базовая уверенность в предсказании
+            confidenceDecay: Float(0.95),   // Скорость падения уверенности
+            velocitySmoothing: Float(0.8),  // Сглаживание скорости
+            maxPredictionDistance: Float(0.3) // Максимальное расстояние предсказания
+        )
+
+        // Добавляем настройки для независимости локтей
+        static let elbowIndependence = (
+            crossingEnabled: true,         // Разрешаем перекрещивание
+            influenceRadius: Float(0.1),   // Радиус влияния на другие точки
+            elasticity: Float(0.95),       // Высокая эластичность
+            minDistance: Float(0.05),      // Минимальное расстояние между локтями
+            recoverySpeed: Float(0.2)      // Скорость восстановления положения
+        )
+
+        // Добавляем настройки для вертикального растяжения
+        static let verticalStretchSettings = (
+            stretchThreshold: Float(0.7),     // Порог высоты для начала компенсации (70% от максимальной высоты)
+            maxCompensation: Float(0.15),     // Максимальная компенсация сжатия (15%)
+            smoothing: Float(0.8),            // Сглаживание компенсации
+            shoulderInfluence: Float(0.7)     // Влияние положения плеч на компенсацию
+        )
     }
     
     // MARK: - Properties
@@ -250,6 +296,15 @@ class AnthropometryAnalyzer {
     private var facePointsVelocities: [CGVector] = []
     private var lastValidFacePoints: [NormalizedLandmark]?
     private var missingFramesCount: Int = 0
+
+    // Добавляем новые свойства для отслеживания всех точек
+    private var pointsHistory: [Int: [(position: NormalizedLandmark, velocity: CGVector)]] = [:]
+    private var lastPredictions: [Int: NormalizedLandmark] = [:]
+    private var predictionConfidence: [Int: Float] = [:]
+
+    // Добавляем свойства для эластичности рук
+    private var armStretch: (left: Float, right: Float) = (0, 0)
+    private var lastArmLengths: (left: Float, right: Float)? = nil
     
     // MARK: - Public Methods
     
@@ -369,7 +424,13 @@ class AnthropometryAnalyzer {
         
         // Применяем более мягкие ограничения
         if constrained.count >= 33 {
+            // Сначала обрабатываем все точки кроме локтей
             for (pointIndex, connections) in Constants.anatomicalConstraints {
+                // Пропускаем локти, они будут обработаны отдельно
+                if pointIndex == 13 || pointIndex == 14 {
+                    continue
+                }
+                
                 var avgX: Float = 0
                 var avgY: Float = 0
                 var totalWeight: Float = 0
@@ -396,6 +457,38 @@ class AnthropometryAnalyzer {
                     )
                 }
             }
+            
+            // Теперь обрабатываем локти отдельно с учетом их независимости
+            let leftElbow = constrained[13]
+            let rightElbow = constrained[14]
+            
+            // Проверяем расстояние между локтями
+            let dx = rightElbow.x - leftElbow.x
+            let dy = rightElbow.y - leftElbow.y
+            let distance = sqrt(dx * dx + dy * dy)
+            
+            // Применяем ограничения только если локти слишком близко друг к другу
+            if distance < Constants.elbowIndependence.minDistance {
+                let factor = Constants.elbowIndependence.minDistance / max(distance, 0.001)
+                let offset = (factor - 1) * 0.5
+                
+                // Смещаем локти в противоположных направлениях
+                constrained[13] = NormalizedLandmark(
+                    x: leftElbow.x - dx * offset,
+                    y: leftElbow.y - dy * offset,
+                    z: leftElbow.z,
+                    visibility: leftElbow.visibility,
+                    presence: leftElbow.presence
+                )
+                
+                constrained[14] = NormalizedLandmark(
+                    x: rightElbow.x + dx * offset,
+                    y: rightElbow.y + dy * offset,
+                    z: rightElbow.z,
+                    visibility: rightElbow.visibility,
+                    presence: rightElbow.presence
+                )
+            }
         }
         
         return constrained
@@ -408,24 +501,48 @@ class AnthropometryAnalyzer {
         
         // Корректируем позиции ключевых точек в соответствии с пропорциями
         if adjusted.count >= 33 {
-            // Корректируем высоту плеч
-            let shoulderY = adjusted[11].y // Используем левое плечо как ориентир
-            let expectedShoulderY = height * Float(HumanProportions.shoulderToHeight) // Явное приведение к Float
-            var shoulderDiff = expectedShoulderY - shoulderY
+            // Определяем вертикальное растяжение
+            let avgShoulderY = (adjusted[11].y + adjusted[12].y) / 2 // Среднее положение плеч по Y
+            let normalizedShoulderHeight = abs(avgShoulderY - adjusted[0].y) / height
+            
+            // Если плечи подняты выше порога, применяем компенсацию сжатия
+            if normalizedShoulderHeight > Constants.verticalStretchSettings.stretchThreshold {
+                let stretchFactor = min(
+                    Constants.verticalStretchSettings.maxCompensation,
+                    (normalizedShoulderHeight - Constants.verticalStretchSettings.stretchThreshold) *
+                    Constants.verticalStretchSettings.shoulderInfluence
+                )
+                
+                // Применяем компенсацию только к горизонтальным координатам верхней части тела
+                for i in 11...16 {
+                    let centerX = (adjusted[11].x + adjusted[12].x) / 2
+                    let dx = adjusted[i].x - centerX
+                    
+                    adjusted[i] = NormalizedLandmark(
+                        x: centerX + dx * (1 + stretchFactor),
+                        y: adjusted[i].y,
+                        z: adjusted[i].z,
+                        visibility: adjusted[i].visibility,
+                        presence: adjusted[i].presence ?? NSNumber(value: 1.0)
+                    )
+                }
+            }
+            
+            // Стандартная корректировка высоты плеч, используем avgShoulderY
+            let expectedShoulderY = height * Float(HumanProportions.shoulderToHeight)
+            var shoulderDiff = expectedShoulderY - avgShoulderY
             
             if isRaisingArms {
-                // Ослабляем ограничения пропорций при поднятии рук
                 shoulderDiff *= Constants.shoulderTensionReduction
             }
             
-            // Корректируем верхнюю часть тела
-            for i in 11...16 { // Плечи и руки
+            for i in 11...16 {
                 adjusted[i] = NormalizedLandmark(
                     x: adjusted[i].x,
                     y: adjusted[i].y + shoulderDiff,
                     z: adjusted[i].z,
                     visibility: adjusted[i].visibility,
-                    presence: adjusted[i].presence ?? NSNumber(value: 1.0)  // Используем существующее значение или 1.0
+                    presence: adjusted[i].presence ?? NSNumber(value: 1.0)
                 )
             }
         }
@@ -761,14 +878,24 @@ class AnthropometryAnalyzer {
     }
     
     private func isCrossing(_ leftArm: [NormalizedLandmark], _ rightArm: [NormalizedLandmark]) -> Bool {
-        // Проверяем пересечение между сегментами рук
         let leftSegments = zip(leftArm.dropLast(), leftArm.dropFirst())
         let rightSegments = zip(rightArm.dropLast(), rightArm.dropFirst())
         
         for (l1, l2) in leftSegments {
             for (r1, r2) in rightSegments {
-                if segmentsIntersect(p1: (l1.x, l1.y), p2: (l2.x, l2.y),
-                                   p3: (r1.x, r1.y), p4: (r2.x, r2.y)) {
+                // Проверяем существенную разницу по Z
+                let avgLeftZ = (l1.z + l2.z) / 2
+                let avgRightZ = (r1.z + r2.z) / 2
+                
+                // Если разница по Z больше порога, считаем что пересечения нет
+                if abs(avgLeftZ - avgRightZ) > Constants.depthHandling.crossoverZThreshold {
+                    continue
+                }
+                
+                if segmentsIntersect(p1: (l1.x, l1.y, l1.z),
+                                   p2: (l2.x, l2.y, l2.z),
+                                   p3: (r1.x, r1.y, r1.z),
+                                   p4: (r2.x, r2.y, r2.z)) {
                     return true
                 }
             }
@@ -834,26 +961,29 @@ class AnthropometryAnalyzer {
         return totalDistance / Float(points1.count)
     }
     
-    private func segmentsIntersect(p1: (Float, Float), p2: (Float, Float),
-                                 p3: (Float, Float), p4: (Float, Float)) -> Bool {
-        // Вычисляем векторы
+    private func segmentsIntersect(p1: (Float, Float, Float), p2: (Float, Float, Float),
+                                 p3: (Float, Float, Float), p4: (Float, Float, Float)) -> Bool {
+        // Проверяем пересечение с учетом Z
+        let zDiff1 = abs(p1.2 - p3.2)
+        let zDiff2 = abs(p2.2 - p4.2)
+        
+        // Если точки находятся на существенно разной глубине, считаем что пересечения нет
+        if zDiff1 > Constants.depthHandling.crossoverZThreshold ||
+           zDiff2 > Constants.depthHandling.crossoverZThreshold {
+            return false
+        }
+        
+        // Проецируем на XY и проверяем пересечение
         let v1 = (x: p2.0 - p1.0, y: p2.1 - p1.1)
         let v2 = (x: p4.0 - p3.0, y: p4.1 - p3.1)
         
-        // Вычисляем определитель
         let det = v1.x * v2.y - v1.y * v2.x
-        
-        // Если определитель близок к нулю, линии параллельны
         if abs(det) < 1e-6 { return false }
         
-        // Вычисляем разницу между начальными точками
         let diff = (x: p3.0 - p1.0, y: p3.1 - p1.1)
-        
-        // Вычисляем параметры пересечения
         let t = (diff.x * v2.y - diff.y * v2.x) / det
         let u = (diff.x * v1.y - diff.y * v1.x) / det
         
-        // Проверяем, находится ли точка пересечения внутри обоих отрезков
         return t >= 0 && t <= 1 && u >= 0 && u <= 1
     }
     
@@ -1130,6 +1260,69 @@ class AnthropometryAnalyzer {
                 }
             }
         }
+
+        // Сортируем части тела по Z для правильной обработки перекрытий
+        let bodyParts = [
+            (indices: [11, 13, 15], name: "leftArm"),    // левая рука
+            (indices: [12, 14, 16], name: "rightArm"),   // правая рука
+            (indices: [23, 25, 27], name: "leftLeg"),    // левая нога
+            (indices: [24, 26, 28], name: "rightLeg"),   // правая нога
+            (indices: [11, 12, 23, 24], name: "torso")   // торс
+        ]
+        
+        // Вычисляем среднюю Z-координату для каждой части тела
+        let sortedParts = bodyParts.map { part in
+            let avgZ = part.indices.reduce(0.0) { sum, idx in
+                sum + result[idx].z
+            } / Float(part.indices.count)
+            return (part: part, avgZ: avgZ)
+        }.sorted { $0.avgZ < $1.avgZ }
+        
+        // Обрабатываем части тела от дальних к ближним
+        for (part, _) in sortedParts {
+            for idx in part.indices {
+                if let visibility = result[idx].visibility?.floatValue,
+                   visibility < Constants.invisibilityHandling.minConfidence,
+                   let lastStable = lastStablePose?[idx] {
+                    
+                    // Учитываем Z при интерполяции
+                    let zDiff = lastStable.z - result[idx].z
+                    let zWeight = min(1.0, abs(zDiff) / Constants.depthHandling.minZDifference)
+                    let fadeSpeed = Constants.invisibilityHandling.fadeOutSpeed * (1 + zWeight)
+                    
+                    result[idx] = NormalizedLandmark(
+                        x: result[idx].x * (1 - fadeSpeed) + lastStable.x * fadeSpeed,
+                        y: result[idx].y,  // Сохраняем Y для плавности
+                        z: result[idx].z * (1 - fadeSpeed) + lastStable.z * fadeSpeed,
+                        visibility: NSNumber(value: visibility),
+                        presence: result[idx].presence
+                    )
+                }
+            }
+        }
+        
+        // Обновляем историю и предсказания для всех точек
+        for i in 0..<landmarks.count {
+            updatePointHistory(index: i, landmark: landmarks[i])
+        }
+        
+        // Применяем предсказание и эластичность
+        for i in 0..<landmarks.count {
+            if (i >= 1 && i <= 6) || i == 13 || i == 14 {
+                // Для точек лица и локтей только применяем предсказание без влияния на другие точки
+                if let visibility = result[i].visibility?.floatValue,
+                   visibility < Constants.predictiveTracking.baseConfidence {
+                    result[i] = predictPointPosition(index: i, current: result[i])
+                }
+                continue
+            }
+            
+            // Для остальных точек применяем полную обработку
+            result[i] = processBodyPoint(index: i, point: result[i], landmarks: result)
+        }
+        
+        // Применяем эластичность к рукам
+        result = applyArmElasticity(result)
         
         return result
     }
@@ -1161,8 +1354,8 @@ class AnthropometryAnalyzer {
         
         for (l1, l2) in leftSegments {
             for (r1, r2) in rightSegments {
-                if segmentsIntersect(p1: (l1.x, l1.y), p2: (l2.x, l2.y),
-                                   p3: (r1.x, r1.y), p4: (r2.x, r2.y)) {
+                if segmentsIntersect(p1: (l1.x, l1.y, l1.z), p2: (l2.x, l2.y, l2.z),
+                                     p3: (r1.x, r1.y, r1.z), p4: (r2.x, r2.y, r2.z)) {
                     return true
                 }
             }
@@ -1183,6 +1376,138 @@ class AnthropometryAnalyzer {
         if self.lastLegVelocities.count > Constants.predictionWindowSize {
             self.lastLegVelocities.removeFirst()
         }
+    }
+
+    private func processBodyPoint(index: Int, point: NormalizedLandmark, landmarks: [NormalizedLandmark]) -> NormalizedLandmark {
+        var processed = point
+        
+        // Проверяем видимость точки
+        if let visibility = point.visibility?.floatValue,
+           visibility < Constants.predictiveTracking.baseConfidence {
+            // Применяем предсказание
+            processed = predictPointPosition(index: index, current: point)
+        }
+        
+        return processed
+    }
+
+    private func updatePointHistory(index: Int, landmark: NormalizedLandmark) {
+        if pointsHistory[index] == nil {
+            pointsHistory[index] = []
+        }
+        
+        var history = pointsHistory[index] ?? []
+        let velocity = calculateVelocityForPoint(current: landmark, history: history)
+        
+        history.append((position: landmark, velocity: velocity))
+        if history.count > Constants.predictiveTracking.historySize {
+            history.removeFirst()
+        }
+        
+        pointsHistory[index] = history
+    }
+
+    private func applyArmElasticity(_ landmarks: [NormalizedLandmark]) -> [NormalizedLandmark] {
+        var result = landmarks
+        
+        let arms = [(shoulder: 11, elbow: 13, wrist: 15), (shoulder: 12, elbow: 14, wrist: 16)]
+        
+        for (i, arm) in arms.enumerated() {
+            let shoulderPos = result[arm.shoulder]
+            let elbowPos = result[arm.elbow]
+            let wristPos = result[arm.wrist]
+            
+            // Применяем эластичность только к соединениям плечо-локоть и локоть-запястье
+            // без влияния на общее положение руки
+            
+            // Обрабатываем плечо-локоть
+            let upperArmStretch = calculateStretch(from: shoulderPos, to: elbowPos)
+            result[arm.elbow] = applyStretch(from: shoulderPos,
+                                           to: elbowPos,
+                                           stretch: upperArmStretch * Constants.elbowIndependence.elasticity)
+            
+            // Обрабатываем локоть-запястье отдельно
+            let forearmStretch = calculateStretch(from: result[arm.elbow], to: wristPos)
+            result[arm.wrist] = applyStretch(from: result[arm.elbow],
+                                           to: wristPos,
+                                           stretch: forearmStretch * Constants.elbowIndependence.elasticity)
+        }
+        
+        return result
+    }
+
+    private func calculateStretch(from: NormalizedLandmark, to: NormalizedLandmark) -> Float {
+        let dx = to.x - from.x
+        let dy = to.y - from.y
+        let distance = sqrt(dx * dx + dy * dy)
+        
+        // Нормализуем растяжение относительно базовой длины
+        return max(0, distance - Constants.elbowIndependence.minDistance) / max(distance, 0.001)
+    }
+
+    private func applyStretch(from: NormalizedLandmark, to: NormalizedLandmark, stretch: Float) -> NormalizedLandmark {
+        let dx = to.x - from.x
+        let dy = to.y - from.y
+        
+        return NormalizedLandmark(
+            x: from.x + dx * (1 + stretch),
+            y: from.y + dy * (1 + stretch),
+            z: to.z,
+            visibility: to.visibility,
+            presence: to.presence
+        )
+    }
+
+    private func predictPointPosition(index: Int, current: NormalizedLandmark) -> NormalizedLandmark {
+        guard let history = pointsHistory[index], !history.isEmpty else {
+            return current
+        }
+        
+        let velocities = history.map { $0.velocity }
+        let avgVelocity = averageVelocity(velocities)
+        
+        // Рассчитываем предсказанную позицию
+        let confidence = predictionConfidence[index] ?? Constants.predictiveTracking.baseConfidence
+        let decayedConfidence = confidence * Constants.predictiveTracking.confidenceDecay
+        
+        let predictedX = current.x + Float(avgVelocity.dx) * decayedConfidence
+        let predictedY = current.y + Float(avgVelocity.dy) * decayedConfidence
+        let predictedZ = current.z
+        
+        predictionConfidence[index] = decayedConfidence
+        
+        return NormalizedLandmark(
+            x: predictedX,
+            y: predictedY,
+            z: predictedZ,
+            visibility: NSNumber(value: decayedConfidence),
+            presence: current.presence
+        )
+    }
+
+    private func calculateVelocityForPoint(current: NormalizedLandmark, history: [(position: NormalizedLandmark, velocity: CGVector)]) -> CGVector {
+        guard let lastPoint = history.last?.position else {
+            return .zero
+        }
+        
+        return CGVector(
+            dx: Double(current.x - lastPoint.x),
+            dy: Double(current.y - lastPoint.y)
+        )
+    }
+
+    private func averageVelocity(_ velocities: [CGVector]) -> CGVector {
+        guard !velocities.isEmpty else { return .zero }
+        
+        let sum = velocities.reduce(CGVector.zero, +)
+        return sum.scaled(by: 1.0 / Double(velocities.count))
+    }
+
+    private func distance(from p1: NormalizedLandmark, to p2: NormalizedLandmark) -> Float {
+        let dx = p1.x - p2.x
+        let dy = p1.y - p2.y
+        let dz = p1.z - p2.z
+        return sqrt(dx * dx + dy * dy + dz * dz)
     }
 }
 
